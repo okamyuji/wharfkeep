@@ -221,6 +221,21 @@ fn check_profile(p: &str) -> Result<(), ColimaError> {
         .ok_or_else(|| ColimaError::InvalidProfile(p.into()))
 }
 
+/// colima が名前を解決したあとのインスタンス名（config/profile.go）。`colima` と空は `default`、
+/// 先頭の `colima-` は外す。`colima-old` も `old` を指す。
+pub fn short_name(p: &str) -> &str {
+    match p {
+        "" | "colima" => "default",
+        _ => p.strip_prefix("colima-").unwrap_or(p),
+    }
+}
+
+/// 作ろうとする名前が既存のインスタンスと同じものを指すか。macOS の既定のファイルシステムは
+/// 大文字と小文字を区別しないので、colima の置き場 `~/.colima/<名前>` が重なる名前も同じと見る。
+pub fn same_instance(new: &str, existing: &str) -> bool {
+    short_name(new).eq_ignore_ascii_case(short_name(existing))
+}
+
 pub fn start_args(spec: &CreateSpec) -> Result<Vec<String>, ColimaError> {
     check_profile(&spec.profile)?;
     if spec.cpus == 0 {
@@ -483,6 +498,38 @@ async fn next_line_capped<R: AsyncBufRead + Unpin>(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn short_name_follows_colima_profile_resolution() {
+        assert_eq!(short_name(""), "default");
+        assert_eq!(short_name("colima"), "default");
+        assert_eq!(short_name("colima-old"), "old");
+        assert_eq!(short_name("colima-default"), "default");
+        assert_eq!(short_name("old"), "old");
+        assert_eq!(short_name("my-colima"), "my-colima");
+    }
+
+    #[test]
+    fn same_instance_sees_aliases_and_case_as_the_same() {
+        for (new, existing) in [
+            ("old", "old"),
+            ("colima-old", "old"),
+            ("colima", "default"),
+            ("colima-default", "default"),
+            ("OLD", "old"),
+        ] {
+            assert!(same_instance(new, existing), "{new} {existing}");
+        }
+        // colima は接頭辞を大文字と小文字を区別して外すので、`Colima-Old` は `~/.colima/Colima-Old` になる。
+        for (new, existing) in [
+            ("old2", "old"),
+            ("dev", "default"),
+            ("colima-x", "old"),
+            ("Colima-Old", "old"),
+        ] {
+            assert!(!same_instance(new, existing), "{new} {existing}");
+        }
+    }
 
     const LIST: &str = include_str!("../tests/fixtures/colima_list.ndjson");
     const STATUS: &str = include_str!("../tests/fixtures/colima_status.json");

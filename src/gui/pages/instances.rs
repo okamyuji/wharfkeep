@@ -250,10 +250,11 @@ fn create_form(ui: &mut egui::Ui, state: &mut GuiState, bridge: &Bridge, lang: L
         ui.colored_label(crate::gui::WARN, e.message(lang));
     }
     // colimaは既存の名前で`start`すると、そのVMの設定を書き換える。
-    let exists = state
-        .snapshot
-        .as_ref()
-        .is_some_and(|s| s.instances.iter().any(|i| i.name == spec.profile));
+    let exists = state.snapshot.as_ref().is_some_and(|s| {
+        s.instances
+            .iter()
+            .any(|i| crate::colima::same_instance(&spec.profile, &i.name))
+    });
     if exists {
         ui.colored_label(crate::gui::WARN, Msg::InstanceExists.text(lang));
     }
@@ -400,7 +401,7 @@ mod tests {
         assert!(requests(&mut ends).is_empty());
     }
 
-        #[test]
+    #[test]
     fn zz_repro_alias_names_bypass_exists() {
         for name in ["colima-old", "OLD"] {
             let (mut h, mut ends) = harness(Lang::En, two_instances());
@@ -409,7 +410,10 @@ mod tests {
             let disabled = h.get_by_label("Create").accesskit_node().is_disabled();
             h.get_by_label("Create").click();
             h.run_steps(4);
-            println!("REPRO name={name} disabled={disabled} requests={:?}", requests(&mut ends));
+            println!(
+                "REPRO name={name} disabled={disabled} requests={:?}",
+                requests(&mut ends)
+            );
         }
     }
 
@@ -423,14 +427,19 @@ mod tests {
             ),
             (Lang::Ja, "作成", "同じ名前のインスタンスがあります"),
         ] {
-            let (mut h, mut ends) = harness(lang, two_instances());
-            h.state_mut().0.instances.name = "old".into();
-            h.run_steps(4);
-            assert!(h.get_by_label(create).accesskit_node().is_disabled());
-            h.get_by_label(reason);
-            h.get_by_label(create).click();
-            h.run_steps(4);
-            assert!(requests(&mut ends).is_empty());
+            for name in ["old", "colima-old", "OLD"] {
+                let (mut h, mut ends) = harness(lang, two_instances());
+                h.state_mut().0.instances.name = name.into();
+                h.run_steps(4);
+                assert!(
+                    h.get_by_label(create).accesskit_node().is_disabled(),
+                    "{name}"
+                );
+                h.get_by_label(reason);
+                h.get_by_label(create).click();
+                h.run_steps(4);
+                assert!(requests(&mut ends).is_empty(), "{name}");
+            }
         }
     }
 
