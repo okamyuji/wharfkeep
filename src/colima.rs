@@ -2,7 +2,7 @@ use crate::i18n::{Lang, Msg};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -18,6 +18,7 @@ pub enum ColimaError {
     InvalidDisk,
     Spawn(String),
     Failed { code: Option<i32>, stderr: String },
+    OutputTooLarge,
 }
 
 impl ColimaError {
@@ -31,6 +32,7 @@ impl ColimaError {
             Self::InvalidMemory(v) => format!("{}: {v}", t(Msg::ColimaMemory)),
             Self::InvalidDisk => t(Msg::ColimaDisk).into(),
             Self::Spawn(e) => format!("{}: {e}", t(Msg::ColimaSpawn)),
+            Self::OutputTooLarge => t(Msg::ColimaOutputTooLarge).into(),
             Self::Failed { code, stderr } => {
                 let code = code.map_or("-".to_string(), |c| c.to_string());
                 format!("{}: {code}: {}", t(Msg::ColimaFailed), stderr.trim())
@@ -216,7 +218,8 @@ pub fn start_args(spec: &CreateSpec) -> Result<Vec<String>, ColimaError> {
 }
 
 /// 削除の確認は GUI 側で行うので、colima には `--force` を渡す。
-pub fn simple_args(action: Action, profile: &str) -> Vec<String> {
+pub fn simple_args(action: Action, profile: &str) -> Result<Vec<String>, ColimaError> {
+    check_profile(profile)?;
     let (verb, force) = match action {
         Action::Start => ("start", false),
         Action::Stop => ("stop", false),
@@ -227,8 +230,13 @@ pub fn simple_args(action: Action, profile: &str) -> Vec<String> {
     if force {
         v.push("--force".into());
     }
-    v
+    Ok(v)
 }
+
+/// JSON を読むための stdout の上限。`colima list --json` は数 KiB なので十分に大きい。
+const STDOUT_LIMIT: usize = 1024 * 1024;
+/// 1行と stderr の保持量の上限。超えた分は読み捨てる。
+const LINE_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Colima {
@@ -250,20 +258,47 @@ impl Colima {
     }
 
     async fn capture(&self, args: &[&str]) -> Result<String, ColimaError> {
-        let out = Command::new(&self.bin)
+        let mut child = Command::new(&self.bin)
             .args(args)
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .output()
-            .await
+            .spawn()
             .map_err(|e| ColimaError::Spawn(e.to_string()))?;
-        if !out.status.success() {
+        // piped を指定したので取れないことはない。
+        let mut stdout = child.stdout.take().expect("piped");
+        let mut stderr = child.stderr.take().expect("piped");
+        // stderr を別タスクで読む。stdout だけ読むと、stderr のパイプが詰まった子が止まる。
+        let err_task =
+            tokio::spawn(async move { read_capped(&mut stderr, LINE_LIMIT, true).await });
+        let out = read_capped(&mut stdout, STDOUT_LIMIT, false).await;
+        let spawn_err = |e: std::io::Error| ColimaError::Spawn(e.to_string());
+        let (out, truncated) = match out {
+            Ok(v) => v,
+            Err(e) => {
+                err_task.abort();
+                return Err(spawn_err(e));
+            }
+        };
+        if truncated {
+            // 読み捨てると終わらない出力で詰まるので、子を止めて打ち切る。
+            let _ = child.kill().await;
+            err_task.abort();
+            return Err(ColimaError::OutputTooLarge);
+        }
+        let status = child.wait().await.map_err(spawn_err)?;
+        let (err, _) = err_task
+            .await
+            .expect("stderr task does not panic")
+            .map_err(spawn_err)?;
+        if !status.success() {
             return Err(ColimaError::Failed {
-                code: out.status.code(),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                code: status.code(),
+                stderr: String::from_utf8_lossy(&err).into_owned(),
             });
         }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
     /// stdout と stderr の行を1本の受け口へ流す。終了状態は両方が閉じたあとに返る。
@@ -304,17 +339,63 @@ async fn stream(
     Ok(status)
 }
 
-fn forward<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+fn forward<R: AsyncRead + Unpin + Send + 'static>(
     r: R,
     tx: mpsc::Sender<String>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(r).lines();
+        let mut r = BufReader::new(r);
         // 受け手が消えても読み続ける。読むのをやめるとパイプが詰まって子が止まる。
-        while let Ok(Some(l)) = lines.next_line().await {
+        while let Ok(Some(l)) = next_line_capped(&mut r, LINE_LIMIT).await {
             let _ = tx.send(l).await;
         }
     })
+}
+
+/// 先頭 `cap` バイトを返す。2つ目の値は、`cap` を超える出力があったかどうか。
+/// `drain` が真なら、超えた分を最後まで読み捨てる。偽なら超えた時点で戻る。
+async fn read_capped<R: AsyncRead + Unpin>(
+    r: &mut R,
+    cap: usize,
+    drain: bool,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut buf = Vec::new();
+    (&mut *r).take(cap as u64 + 1).read_to_end(&mut buf).await?;
+    let truncated = buf.len() > cap;
+    buf.truncate(cap);
+    if truncated && drain {
+        // 子が書き終えるまでパイプを空にしないと、書き込み側が詰まる。
+        tokio::io::copy(r, &mut tokio::io::sink()).await?;
+    }
+    Ok((buf, truncated))
+}
+
+/// `lines()` と同じく `\n` と `\r\n` で区切る。ただし1行の保持量は `cap` バイトまでで、超えた分は捨てる。
+async fn next_line_capped<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    cap: usize,
+) -> std::io::Result<Option<String>> {
+    let mut line = Vec::new();
+    let mut any = false;
+    loop {
+        let buf = r.fill_buf().await?;
+        if buf.is_empty() {
+            break;
+        }
+        any = true;
+        let nl = buf.iter().position(|&b| b == b'\n');
+        let end = nl.unwrap_or(buf.len());
+        let room = cap.saturating_sub(line.len());
+        line.extend_from_slice(&buf[..end.min(room)]);
+        r.consume(end + usize::from(nl.is_some()));
+        if nl.is_some() {
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            break;
+        }
+    }
+    Ok(any.then(|| String::from_utf8_lossy(&line).into_owned()))
 }
 
 #[cfg(test)]
@@ -528,12 +609,28 @@ mod tests {
     #[test]
     fn simple_args_per_action() {
         assert_eq!(
-            simple_args(Action::Delete, "dev"),
+            simple_args(Action::Delete, "dev").unwrap(),
             ["delete", "dev", "--force"]
         );
-        assert_eq!(simple_args(Action::Start, "dev"), ["start", "dev"]);
-        assert_eq!(simple_args(Action::Stop, "dev"), ["stop", "dev"]);
-        assert_eq!(simple_args(Action::Restart, "dev"), ["restart", "dev"]);
+        assert_eq!(simple_args(Action::Start, "dev").unwrap(), ["start", "dev"]);
+        assert_eq!(simple_args(Action::Stop, "dev").unwrap(), ["stop", "dev"]);
+        assert_eq!(
+            simple_args(Action::Restart, "dev").unwrap(),
+            ["restart", "dev"]
+        );
+    }
+
+    #[test]
+    fn simple_args_rejects_option_like_and_invalid_profiles() {
+        for p in ["-h", "--force", "", "a b", ".."] {
+            assert!(
+                matches!(
+                    simple_args(Action::Delete, p),
+                    Err(ColimaError::InvalidProfile(_))
+                ),
+                "{p:?}"
+            );
+        }
     }
 
     #[test]
@@ -552,6 +649,7 @@ mod tests {
             (ColimaError::InvalidMemory(7.5), "7.5"),
             (ColimaError::InvalidDisk, ""),
             (ColimaError::Spawn("io-x".into()), "io-x"),
+            (ColimaError::OutputTooLarge, ""),
             (
                 ColimaError::Failed {
                     code: Some(9),
@@ -653,6 +751,75 @@ esac"#
             }) => assert_eq!(stderr.trim(), "boom"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn capture_accepts_stdout_up_to_the_limit_and_rejects_beyond() {
+        let d = tempfile::tempdir().unwrap();
+        let at = fake(&d, "head -c 1048576 /dev/zero | tr '\\0' x");
+        assert_eq!(at.capture(&[]).await.unwrap().len(), 1024 * 1024);
+        let over = fake(&d, "head -c 1048577 /dev/zero | tr '\\0' x");
+        assert_eq!(over.capture(&[]).await, Err(ColimaError::OutputTooLarge));
+    }
+
+    #[tokio::test]
+    async fn capture_stops_an_endless_producer() {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake(&d, "exec yes");
+        let r = tokio::time::timeout(std::time::Duration::from_secs(10), c.capture(&[])).await;
+        assert_eq!(r.expect("hung"), Err(ColimaError::OutputTooLarge));
+    }
+
+    #[tokio::test]
+    async fn failed_stderr_is_cut_to_64_kib_without_blocking_the_child() {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake(&d, "head -c 300000 /dev/zero | tr '\\0' e 1>&2; exit 2");
+        match c.capture(&[]).await {
+            Err(ColimaError::Failed {
+                code: Some(2),
+                stderr,
+            }) => assert_eq!(stderr.len(), 64 * 1024),
+            other => panic!("{:?}", other.map(|s| s.len())),
+        }
+        let small = fake(&d, "printf abc 1>&2; exit 2");
+        match small.capture(&[]).await {
+            Err(ColimaError::Failed { stderr, .. }) => assert_eq!(stderr, "abc"),
+            other => panic!("{:?}", other.map(|s| s.len())),
+        }
+    }
+
+    async fn stream_lines(body: &str) -> Vec<String> {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake(&d, body);
+        let (mut rx, h) = c.run_streaming(vec![]);
+        let mut v = vec![];
+        while let Some(l) = rx.recv().await {
+            v.push(l);
+        }
+        h.await.unwrap().unwrap();
+        v
+    }
+
+    #[tokio::test]
+    async fn streamed_line_is_cut_to_64_kib_and_next_line_survives() {
+        let v = stream_lines("head -c 300000 /dev/zero | tr '\\0' x; echo; echo after").await;
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].len(), 64 * 1024);
+        assert!(v[0].bytes().all(|b| b == b'x'));
+        assert_eq!(v[1], "after");
+    }
+
+    #[tokio::test]
+    async fn streamed_line_of_exactly_the_limit_is_kept_whole() {
+        let v = stream_lines("head -c 65536 /dev/zero | tr '\\0' x; echo").await;
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].len(), 64 * 1024);
+    }
+
+    #[tokio::test]
+    async fn streamed_lines_handle_crlf_blank_and_unterminated_last_line() {
+        let v = stream_lines("printf 'a\\r\\n\\nb\\nc'").await;
+        assert_eq!(v, ["a", "", "b", "c"]);
     }
 
     #[tokio::test]

@@ -71,6 +71,7 @@ pub enum Msg {
     ColimaDisk,
     ColimaSpawn,
     ColimaFailed,
+    ColimaOutputTooLarge,
     SnapshotIo,
     SnapshotParse,
     DockerConnect,
@@ -80,7 +81,7 @@ pub enum Msg {
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 25] = [
+    const ALL: [Msg; 26] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::Reload,
@@ -101,6 +102,7 @@ impl Msg {
         Msg::ColimaDisk,
         Msg::ColimaSpawn,
         Msg::ColimaFailed,
+        Msg::ColimaOutputTooLarge,
         Msg::SnapshotIo,
         Msg::SnapshotParse,
         Msg::DockerConnect,
@@ -162,6 +164,8 @@ impl Msg {
             (Msg::ColimaSpawn, Lang::Ja) => "colima を実行できません",
             (Msg::ColimaFailed, Lang::En) => "colima failed (exit code)",
             (Msg::ColimaFailed, Lang::Ja) => "colima が失敗しました（終了コード）",
+            (Msg::ColimaOutputTooLarge, Lang::En) => "colima printed too much output (over 1 MiB)",
+            (Msg::ColimaOutputTooLarge, Lang::Ja) => "colima の出力が大きすぎます（1 MiB 超）",
             (Msg::SnapshotIo, Lang::En) => "cannot read the state file",
             (Msg::SnapshotIo, Lang::Ja) => "状態ファイルを読めません",
             (Msg::SnapshotParse, Lang::En) => "the state file is not valid",
