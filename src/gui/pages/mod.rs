@@ -178,13 +178,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut GuiState, bridge: &Bridge, lang: Lang
     }
     if state.page == Page::Dashboard {
         // 利用者がウィンドウを縮めても、下の枠が切れずに届くようにする。
-        // 一覧のページと同じ既定のidだと、スクロール位置がページをまたいで残る。
-        egui::ScrollArea::vertical()
-            .id_salt("dashboard")
-            .show(ui, |ui| {
-                no_instances(ui, state, lang);
-                dashboard::show(ui, state, bridge, lang);
-            });
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            no_instances(ui, state, lang);
+            dashboard::show(ui, state, bridge, lang);
+        });
     } else {
         instances::show(ui, state, bridge, lang);
     }

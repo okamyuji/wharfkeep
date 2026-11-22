@@ -712,6 +712,36 @@ mod tests {
     }
 
     #[test]
+    fn a_short_window_scrolls_the_dashboard_without_carrying_it_to_other_pages() {
+        let height = 300.0;
+        let mut state = named_state("dev");
+        let mut snapshot = state.snapshot.clone().unwrap();
+        if let Some(DockerState::Ready(sum)) = snapshot.docker.get_mut("dev") {
+            for (i, v) in sum.volumes.iter_mut().enumerate() {
+                v.name = format!("data-{i}");
+            }
+        }
+        state.apply_snapshot(Some(snapshot));
+        let (mut h, _ends) =
+            super::super::test_util::harness_with_size(Lang::En, state, [740.0, height]);
+        let last = |h: &egui_kittest::Harness<'_, _>| {
+            h.get_by(|n| n.label().is_some_and(|l| l.starts_with("Build cache ")))
+                .rect()
+        };
+        assert!(last(&h).max.y > height);
+        h.get_by(|n| n.label().is_some_and(|l| l.starts_with("Build cache ")))
+            .scroll_to_me();
+        h.run_steps(4);
+        assert!(last(&h).max.y <= height, "{:?}", last(&h));
+        h.state_mut().0.page = Page::Volumes;
+        h.run_steps(4);
+        // 一覧が先頭から見えている。ダッシュボードのスクロール量が残ると、1行目が窓の上へ隠れる。
+        let heading = h.get_by_label("Volumes").rect();
+        let row = h.get_by_label("Delete data-0").rect();
+        assert!(row.min.y > heading.max.y, "{row:?} {heading:?}");
+    }
+
+    #[test]
     fn dashboard_cards_share_one_grid() {
         for (lang, width, name) in [
             (Lang::En, 900.0, "dev"),

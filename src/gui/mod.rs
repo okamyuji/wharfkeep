@@ -54,9 +54,6 @@ pub(crate) fn install_fonts(ctx: &egui::Context, lang: Lang) {
     ctx.set_font_providers(vec![std::sync::Arc::new(provider)]);
 }
 
-/// ウィンドウを開き、閉じられるまで戻らない。
-// 構造体の式にすると、フィールドを消す変異が`run`の配線を除外できずに残る。
-#[allow(clippy::field_reassign_with_default)]
 /// 初めのウィンドウの大きさ。高さは、内訳が上限の行数になったダッシュボードが収まる値にする。
 /// それより長い一覧は右ペインの中でスクロールする。
 pub const WINDOW_SIZE: [f32; 2] = [960.0, 500.0];
@@ -80,6 +77,7 @@ fn native_options() -> eframe::NativeOptions {
     }
 }
 
+/// ウィンドウを開き、閉じられるまで戻らない。
 pub fn run() -> eframe::Result {
     let lang = Lang::detect();
     let dir = paths::data_dir()
