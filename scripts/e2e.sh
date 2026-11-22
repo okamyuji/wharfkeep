@@ -65,6 +65,7 @@ restore() {
 succeeded=0
 on_exit() {
   local rc=$?
+  kill "$watchdog" 2>/dev/null || true
   restore
   if [ "$succeeded" != 1 ] && [ "$rc" = 0 ]; then
     rc=1
@@ -72,6 +73,10 @@ on_exit() {
   exit "$rc"
 }
 trap on_exit EXIT
+# 全体の上限。超えたら、そのとき実行していた行とコマンドを書いて失敗させる。
+trap 'echo "e2e: 失敗: 上限 ${E2E_LIMIT:-840} 秒を超えました（${LINENO}行目付近: ${BASH_COMMAND}）" >&2; exit 1' TERM
+( sleep "${E2E_LIMIT:-840}"; kill -TERM $$ ) &
+watchdog=$!
 
 # 条件が成り立つまで繰り返す。最大 $1 秒。
 wait_until() {
@@ -120,30 +125,38 @@ menu_open_below() {
 
 # ステータス項目をAXPressで押してメニューを開き、項目を選ぶ。VoiceOverがメニューを開くのと同じ経路。
 # $2は項目の名前。「last」なら最後の項目（終了）を選ぶ。言語によらず選べる。
+job_gone() { ! kill -0 "$1" 2>/dev/null; }
+# メニューが開いたあとで、前面のアプリが変わるなどして閉じることがある。閉じたら開き直して選び直す。
 choose_menu_item() {
   local pid=$1 item=$2 stage=$3 ix iy iw ih
   read -r ix iy iw ih <<<"$(item_geom "$pid")" || true
   [ -n "${ih:-}" ] || fail "メニューバー項目がAXに見えません。${front_app}を外部画面に置いてください（内蔵画面ではノッチの裏に隠れる）"
-  local try
+  local target try click clicks=() chosen=0
+  case "$item" in
+    last) target="last menu item" ;;
+    # 「ログイン時に起動」は終了の1つ前。言語によらず位置で選ぶ。
+    login) target="menu item -2" ;;
+    *) target="menu item \"$item\"" ;;
+  esac
   for try in 1 2 3; do
     # 開いたメニューの中で操作が終わるまでAXPressが戻らないことがあるので、待たずに先へ進む。
     bar "$pid" 'click menu bar item 1 of menu bar 2' >/dev/null 2>&1 &
-    wait_until 5 menu_open_below "$pid" "$ix" "$iy" "$ih" && break
-    [ "$try" = 3 ] && fail "メニューが開きません"
+    clicks+=("$!")
+    if wait_until 5 menu_open_below "$pid" "$ix" "$iy" "$ih"; then
+      shot_rect "$stage" "$((ix + iw / 2 - 300)),$iy,600,220"
+      if ax "$pid" "click $target of menu 1 of menu bar item 1 of menu bar 2" >/dev/null 2>&1; then
+        chosen=1
+        break
+      fi
+    fi
   done
-  shot_rect "$stage" "$((ix + iw / 2 - 300)),$iy,600,220"
-  if [ "$item" = last ]; then
-    ax "$pid" "click last menu item of menu 1 of menu bar item 1 of menu bar 2" >/dev/null ||
-      fail "メニューの最後の項目を押せません"
-  elif [ "$item" = login ]; then
-    # 「ログイン時に起動」は終了の1つ前。言語によらず位置で選ぶ。
-    ax "$pid" "click menu item -2 of menu 1 of menu bar item 1 of menu bar 2" >/dev/null ||
-      fail "メニューの「ログイン時に起動」を押せません"
-  else
-    ax "$pid" "click menu item \"$item\" of menu 1 of menu bar item 1 of menu bar 2" >/dev/null ||
-      fail "メニューの「${item}」を押せません"
-  fi
-  wait || true
+  [ "$chosen" = 1 ] || fail "メニューを3回開いても「${item}」を押せません"
+  # 自分が起こした押下だけを、上限つきで待つ。引数なしの wait は、試験が起こしたデーモンなど
+  # ほかのバックグラウンドの子も待ち、終わらないと e2e が止まる。
+  for click in "${clicks[@]}"; do
+    wait_until 10 job_gone "$click" || { kill "$click" 2>/dev/null || true; }
+    wait "$click" 2>/dev/null || true
+  done
 }
 
 contents() { ax "$1" 'get entire contents of window "wharfkeep"' 2>/dev/null | tr ',' '\n' || true; }
