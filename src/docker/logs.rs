@@ -174,6 +174,11 @@ mod tests {
     }
 
     #[test]
+    fn cap_is_64_kib() {
+        assert_eq!(LINE_CAP, 65536);
+    }
+
+    #[test]
     fn line_of_exactly_cap_bytes_is_kept_whole() {
         let mut line = vec![b'y'; LINE_CAP];
         line.push(b'\n');

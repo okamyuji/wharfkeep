@@ -484,8 +484,13 @@ mod tests {
         for (x, y) in [(0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)] {
             assert_eq!(pixel(&px, size, x, y), [0, 0, 0, 0], "({x},{y})");
         }
-        // 縁の中ほどは円の内側に入る。
-        assert_eq!(pixel(&px, size, 1, size / 2)[3], 0xFF);
-        assert_eq!(pixel(&px, size, size / 2, size - 2)[3], 0xFF);
+        // 半径17の円。端の1画素は外、その内側の画素は中に入る。
+        let mid = size / 2;
+        for (x, y) in [(0, mid), (size - 1, mid), (mid, 0), (mid, size - 1)] {
+            assert_eq!(pixel(&px, size, x, y)[3], 0, "({x},{y})");
+        }
+        for (x, y) in [(1, mid), (size - 2, mid), (mid, 1), (mid, size - 2)] {
+            assert_eq!(pixel(&px, size, x, y)[3], 0xFF, "({x},{y})");
+        }
     }
 }

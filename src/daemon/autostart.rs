@@ -211,6 +211,22 @@ mod tests {
     }
 
     #[test]
+    fn disable_ignores_missing_plist_but_reports_other_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = Autostart {
+            exe: PathBuf::from("/usr/bin/true"),
+            plist: dir.path().join("wharfkeep.plist"),
+        };
+        assert_eq!(missing.disable(), Ok(()));
+        // ディレクトリはremove_fileで消せない。
+        let dir_in_place = Autostart {
+            exe: PathBuf::from("/usr/bin/true"),
+            plist: dir.path().to_path_buf(),
+        };
+        assert!(dir_in_place.disable().is_err());
+    }
+
+    #[test]
     fn plist_escapes_xml_special_chars() {
         let xml = plist_xml(Path::new("/A&B/<x>/\"q'/w"));
         assert!(

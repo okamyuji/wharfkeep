@@ -209,15 +209,7 @@ pub(crate) async fn run_loop(
             Ok(s) => s,
             Err(e) => {
                 eprintln!("wharfkeep: {}", e.message(lang));
-                // 一覧を取れなくてもデーモンは動いているので、前回の中身のまま時刻だけ進める。
-                Snapshot {
-                    updated_at: SystemTime::now(),
-                    ..last.take().unwrap_or(Snapshot {
-                        updated_at: SystemTime::now(),
-                        instances: Vec::new(),
-                        docker: BTreeMap::new(),
-                    })
-                }
+                carry_over(last.take())
             }
         };
         if let Err(e) = snapshot::write_atomic(&state_path, &snap) {
@@ -236,8 +228,26 @@ pub(crate) async fn run_loop(
     }
 }
 
+/// 一覧を取れなくてもデーモンは動いているので、前回の中身のまま時刻だけ進める。
+fn carry_over(last: Option<Snapshot>) -> Snapshot {
+    Snapshot {
+        updated_at: SystemTime::now(),
+        ..last.unwrap_or(Snapshot {
+            updated_at: SystemTime::now(),
+            instances: Vec::new(),
+            docker: BTreeMap::new(),
+        })
+    }
+}
+
 /// メニューから選ばれた`colima start|stop <name>`を走らせる。終わったら監視を起こして結果を映す。
-pub(crate) async fn run_action(colima: Colima, args: Vec<String>, wake: Arc<Notify>, lang: Lang) {
+/// 失敗したら理由を標準エラーに出して返す。
+pub(crate) async fn run_action(
+    colima: Colima,
+    args: Vec<String>,
+    wake: Arc<Notify>,
+    lang: Lang,
+) -> Option<String> {
     let (mut rx, handle) = colima.run_streaming(args.clone());
     // 失敗の理由として最後の数行だけ残す。
     let mut tail = VecDeque::new();
@@ -253,7 +263,7 @@ pub(crate) async fn run_action(colima: Colima, args: Vec<String>, wake: Arc<Noti
         Ok(Err(e)) => Some(e.message(lang)),
         Err(e) => Some(e.to_string()),
     };
-    if let Some(d) = detail {
+    if let Some(d) = &detail {
         eprintln!(
             "wharfkeep: {}: colima {}: {d}",
             Msg::TrayActionFailed.text(lang),
@@ -261,6 +271,7 @@ pub(crate) async fn run_action(colima: Colima, args: Vec<String>, wake: Arc<Noti
         );
     }
     wake.notify_one();
+    detail
 }
 
 const ACTION_TAIL_LINES: usize = 5;
@@ -548,6 +559,86 @@ mod tests {
         assert!(e.watches.is_empty());
     }
 
+    fn fake_colima(dir: &tempfile::TempDir, body: &str) -> Colima {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.path().join("colima");
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Colima::new(p)
+    }
+
+    #[tokio::test]
+    async fn colima_is_an_instance_source() {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake_colima(
+            &d,
+            r#"case "$1" in
+list) echo '{"name":"dev","status":"Stopped","arch":"aarch64","cpus":1,"memory":1,"disk":1,"runtime":"docker"}' ;;
+status) echo '{"docker_socket":"unix:///s/dev.sock"}' ;;
+esac"#,
+        );
+        let list = InstanceSource::list(&c).await.unwrap();
+        assert_eq!(list[0].name, "dev");
+        assert_eq!(
+            InstanceSource::docker_socket(&c, "dev").await.unwrap(),
+            PathBuf::from("/s/dev.sock")
+        );
+    }
+
+    #[tokio::test]
+    async fn action_success_wakes_monitor_without_error() {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake_colima(&d, "echo starting");
+        let wake = Arc::new(Notify::new());
+        let r = run_action(
+            c,
+            vec!["start".into(), "dev".into()],
+            wake.clone(),
+            Lang::En,
+        )
+        .await;
+        assert_eq!(r, None);
+        woken(&wake).await;
+    }
+
+    #[tokio::test]
+    async fn action_failure_keeps_last_lines_and_wakes_monitor() {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake_colima(&d, "for i in 1 2 3 4 5 6 7; do echo line$i; done; exit 3");
+        let wake = Arc::new(Notify::new());
+        let r = run_action(c, vec!["stop".into(), "dev".into()], wake.clone(), Lang::En)
+            .await
+            .unwrap();
+        assert!(r.contains("line3 / line4 / line5 / line6 / line7"), "{r}");
+        assert!(!r.contains("line2"), "{r}");
+        assert!(r.contains('3'), "{r}");
+        woken(&wake).await;
+    }
+
+    #[tokio::test]
+    async fn action_spawn_failure_is_reported() {
+        let c = Colima::new(PathBuf::from("/nonexistent/colima"));
+        let r = run_action(c, vec![], Arc::new(Notify::new()), Lang::En)
+            .await
+            .unwrap();
+        assert!(r.contains("cannot run colima"), "{r}");
+    }
+
+    #[test]
+    fn list_failure_carries_over_last_snapshot_with_new_time() {
+        let old = Snapshot {
+            updated_at: SystemTime::UNIX_EPOCH,
+            instances: vec![instance("default", InstanceStatus::Running)],
+            docker: BTreeMap::new(),
+        };
+        let s = carry_over(Some(old.clone()));
+        assert_eq!(s.instances, old.instances);
+        assert!(s.updated_at > SystemTime::UNIX_EPOCH);
+        let empty = carry_over(None);
+        assert!(empty.instances.is_empty() && empty.docker.is_empty());
+        assert!(empty.updated_at > SystemTime::UNIX_EPOCH);
+    }
+
     #[tokio::test]
     async fn vanished_instance_drops_its_engine() {
         let dir = tempfile::tempdir().unwrap();
@@ -556,11 +647,20 @@ mod tests {
         let fake = Fake::new(vec![instance("default", InstanceStatus::Running)], Ok(sock));
         let mut e = engines();
         tick(&fake, &mut e).await.unwrap();
-        let _sub = docker.next_subscriber().await;
+        let sub = docker.next_subscriber().await;
         assert_eq!(e.watches.len(), 1);
         fake.set_instances(Ok(vec![]));
         let s = tick(&fake, &mut e).await.unwrap();
         assert!(s.docker.is_empty());
         assert!(e.watches.is_empty());
+        // 捨てた接続の購読タスクも止まり、偽物の側で接続が切れる。
+        let closed = async {
+            while sub.send(Some(EVENT.into())).is_ok() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), closed)
+            .await
+            .expect("event connection closed after the engine was dropped");
     }
 }
