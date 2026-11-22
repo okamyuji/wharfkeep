@@ -21,6 +21,9 @@ fail() {
 daemon_pids() { pgrep -fx "$exe( daemon)?" || true; }
 gui_pids() { pgrep -fx "$exe gui" || true; }
 count() { "$@" | grep -c . || true; }
+# wait_untilに渡す条件。引数で$(...)を渡すと一度だけ展開されて値が固まるので、関数で数え直す。
+daemons_are() { [ "$(count daemon_pids)" -eq "$1" ]; }
+guis_are() { [ "$(count gui_pids)" -eq "$1" ]; }
 
 cleanup() { pkill -f "wharfkeep.app/Contents/MacOS/wharfkeep" || true; }
 on_exit() {
@@ -66,6 +69,14 @@ menu_open_below() {
   ((my >= iy + ih && my <= iy + ih + 20 && mx > ix - 300 && mx < ix + 300))
 }
 
+mouse_click() {
+  timeout 10 osascript -l JavaScript -e "ObjC.import('CoreGraphics');
+const p = \$.CGPointMake($1, $2);
+for (const t of [\$.kCGEventLeftMouseDown, \$.kCGEventLeftMouseUp]) {
+  \$.CGEventPost(\$.kCGHIDEventTap, \$.CGEventCreateMouseEvent(null, t, p, \$.kCGMouseButtonLeft));
+}" >/dev/null
+}
+
 # ステータス項目へ実際のマウスクリックを送ってメニューを開き、項目を選ぶ。
 # tray-iconは自前のmouseDown処理の中でだけメニューを付けるため、AXPressではメニューが開かない。
 choose_menu_item() {
@@ -73,12 +84,13 @@ choose_menu_item() {
   read -r ix iy iw ih <<<"$(item_geom "$pid")" || true
   [ -n "${ih:-}" ] || fail "メニューバー項目がAXに見えません。前面のアプリの画面でメニューバー項目が隠れていないか確かめてください（ノッチの裏など）"
   cx=$((ix + iw / 2)) cy=$((iy + ih / 2))
-  timeout 10 osascript -l JavaScript -e "ObjC.import('CoreGraphics');
-const p = \$.CGPointMake($cx, $cy);
-for (const t of [\$.kCGEventLeftMouseDown, \$.kCGEventLeftMouseUp]) {
-  \$.CGEventPost(\$.kCGHIDEventTap, \$.CGEventCreateMouseEvent(null, t, p, \$.kCGMouseButtonLeft));
-}" >/dev/null
-  wait_until 5 menu_open_below "$pid" "$ix" "$iy" "$ih" || fail "メニューが開きません"
+  # 開いているメニューを押すと閉じるので、押し直すのは閉じたままのときだけにする。
+  local try
+  for try in 1 2; do
+    mouse_click "$cx" "$cy"
+    wait_until 5 menu_open_below "$pid" "$ix" "$iy" "$ih" && break
+    [ "$try" = 2 ] && fail "メニューが開きません"
+  done
   shot_rect "$stage" "$((cx - 300)),$iy,600,200"
   ax "$pid" "click menu item \"$item\" of menu 1 of menu bar item 1 of menu bar 2" >/dev/null
 }
@@ -108,18 +120,19 @@ check_reload_button() {
 
 close_window() {
   ax "$1" 'click (first button of window "wharfkeep" whose subrole is "AXCloseButton")' >/dev/null
-  wait_until 10 test "$(count gui_pids)" -eq 0 || fail "ウィンドウを閉じてもGUIのプロセスが残ります"
+  wait_until 10 guis_are 0 || fail "ウィンドウを閉じてもGUIのプロセスが残ります"
 }
 
 cleanup
-wait_until 10 test "$(count daemon_pids)$(count gui_pids)" = 00 || fail "前回のプロセスが残っています"
+wait_until 10 daemons_are 0 || fail "前回のデーモンが残っています"
+wait_until 10 guis_are 0 || fail "前回のGUIが残っています"
 [ -x "$exe" ] || fail "$exe がありません。先に scripts/bundle.sh を実行してください"
 
 # AXの名前を固定するため、英語で通しの流れを試す。
 echo "== en"
 # (1)(2) .appを開き、デーモンが1つだけ立つまで待つ。
 open --env WHARFKEEP_LANG=en "$app"
-wait_until 10 test "$(count daemon_pids)" -eq 1 || fail "デーモンが1つになりません: $(daemon_pids | tr '\n' ' ')"
+wait_until 10 daemons_are 1 || fail "デーモンが1つになりません: $(daemon_pids | tr '\n' ' ')"
 dpid=$(daemon_pids)
 wait_until 10 status_item_visible "$dpid" || fail "メニューバー項目がAXに見えません。前面のアプリの画面でメニューバー項目が隠れていないか確かめてください（ノッチの裏など）"
 shot "en-1-daemon"
@@ -130,7 +143,7 @@ choose_menu_item "$dpid" "Open Window" "en-3-menu"
 echo "(3) メニューの「Open Window」を選んだ"
 
 # (4) GUIのプロセスが立つ。
-wait_until 10 test "$(count gui_pids)" -eq 1 || fail "GUIのプロセスが立ちません"
+wait_until 10 guis_are 1 || fail "GUIのプロセスが立ちません"
 gpid=$(gui_pids)
 echo "(4) GUI pid=$gpid"
 
@@ -146,16 +159,16 @@ shot "en-6-closed"
 echo "(6) GUIは終了し、デーモン pid=$dpid は残った"
 
 pkill -fx "$exe" || true
-wait_until 10 test "$(count daemon_pids)" -eq 0 || fail "デーモンが終わりません"
+wait_until 10 daemons_are 0 || fail "デーモンが終わりません"
 
 # 日本語の文言が描けることを確かめる。メニューバーの流れは上で確かめたのでGUIだけを開く。
 echo "== ja"
 WHARFKEEP_LANG=ja "$exe" gui >/dev/null 2>&1 &
-wait_until 10 test "$(count gui_pids)" -eq 1 || fail "GUIのプロセスが立ちません（ja）"
+wait_until 10 guis_are 1 || fail "GUIのプロセスが立ちません（ja）"
 gpid=$(gui_pids)
 check_reload_button "$gpid" "再読み込み" "再読み込みした回数:"
 shot_rect "ja-5-gui" "$(window_rect "$gpid")"
 close_window "$gpid"
 echo "(ja) 「再読み込み」を押し「再読み込みした回数: 1」になり、閉じるとGUIが終わった"
 
-echo "e2e: 成功（画面は $out）"
+echo "e2e: 成功（画面は ${out}）"
