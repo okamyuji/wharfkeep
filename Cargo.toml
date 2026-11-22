@@ -7,7 +7,7 @@ license = "MIT"
 description = "colimaとDockerをメニューバーとウィンドウから扱うmacOSアプリ"
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = ["accesskit", "system_fonts", "wgpu", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "system_fonts", "wgpu", "wayland", "x11"] }
 sys-locale = "0.3"
 tray-icon = "0.26"
 winit = "0.30"

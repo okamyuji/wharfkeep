@@ -2,8 +2,9 @@
 # target/wharfkeep.app をOSから操作し、メニューバーからGUIを開き、閉じるとGUIだけが終わることを確かめる。
 # 先に scripts/bundle.sh を実行しておく。アクセシビリティと画面収録の許可が要る。
 #
-# 前提: メニューバー項目が前面のアプリの画面で見えていること。
 # macOSは前面のアプリがある画面のメニューバーだけをAXに出し、ノッチなどで隠れた項目は出さない。
+# 項目を探す前にFinderを前面にする。ただしFinderを前面にしても使われる画面は変わらないので、
+# 直前に前面だったアプリの画面で項目が隠れていれば、AXには出ない。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root=$(pwd -P)
@@ -82,7 +83,7 @@ for (const t of [\$.kCGEventLeftMouseDown, \$.kCGEventLeftMouseUp]) {
 choose_menu_item() {
   local pid=$1 item=$2 stage=$3 ix iy iw ih cx cy
   read -r ix iy iw ih <<<"$(item_geom "$pid")" || true
-  [ -n "${ih:-}" ] || fail "メニューバー項目がAXに見えません。前面のアプリの画面でメニューバー項目が隠れていないか確かめてください（ノッチの裏など）"
+  [ -n "${ih:-}" ] || fail "メニューバー項目がAXに見えません。外部画面のアプリを前面にしてから実行してください（内蔵画面ではノッチの裏に隠れることがある）"
   cx=$((ix + iw / 2)) cy=$((iy + ih / 2))
   # 開いているメニューを押すと閉じるので、押し直すのは閉じたままのときだけにする。
   local try
@@ -134,7 +135,8 @@ echo "== en"
 open --env WHARFKEEP_LANG=en "$app"
 wait_until 10 daemons_are 1 || fail "デーモンが1つになりません: $(daemon_pids | tr '\n' ' ')"
 dpid=$(daemon_pids)
-wait_until 10 status_item_visible "$dpid" || fail "メニューバー項目がAXに見えません。前面のアプリの画面でメニューバー項目が隠れていないか確かめてください（ノッチの裏など）"
+timeout 10 osascript -e 'tell application "Finder" to activate' >/dev/null
+wait_until 10 status_item_visible "$dpid" || fail "メニューバー項目がAXに見えません。外部画面のアプリを前面にしてから実行してください（内蔵画面ではノッチの裏に隠れることがある）"
 shot "en-1-daemon"
 echo "(1)(2) デーモン pid=$dpid"
 

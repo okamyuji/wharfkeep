@@ -7,6 +7,7 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 allow = [
     "MIT",
     "Apache-2.0",
+    "BSL-1.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
