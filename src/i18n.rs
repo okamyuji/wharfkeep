@@ -71,11 +71,13 @@ pub enum Msg {
     ColimaDisk,
     ColimaSpawn,
     ColimaFailed,
+    SnapshotIo,
+    SnapshotParse,
 }
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 20] = [
+    const ALL: [Msg; 22] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::Reload,
@@ -96,6 +98,8 @@ impl Msg {
         Msg::ColimaDisk,
         Msg::ColimaSpawn,
         Msg::ColimaFailed,
+        Msg::SnapshotIo,
+        Msg::SnapshotParse,
     ];
 
     pub fn text(self, lang: Lang) -> &'static str {
@@ -150,6 +154,10 @@ impl Msg {
             (Msg::ColimaSpawn, Lang::Ja) => "colima を実行できません",
             (Msg::ColimaFailed, Lang::En) => "colima failed (exit code)",
             (Msg::ColimaFailed, Lang::Ja) => "colima が失敗しました（終了コード）",
+            (Msg::SnapshotIo, Lang::En) => "cannot read the state file",
+            (Msg::SnapshotIo, Lang::Ja) => "状態ファイルを読めません",
+            (Msg::SnapshotParse, Lang::En) => "the state file is not valid",
+            (Msg::SnapshotParse, Lang::Ja) => "状態ファイルの形が不正です",
         }
     }
 }
