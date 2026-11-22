@@ -19,7 +19,7 @@ fn main() -> ExitCode {
         eprintln!("wharfkeep: {}", Msg::NoHomeDir.text(lang));
         return ExitCode::FAILURE;
     };
-    let lock = std::fs::create_dir_all(&dir)
+    let lock = paths::ensure_private_dir(&dir)
         .and_then(|()| InstanceLock::try_acquire(&dir.join(lock_name)));
     let _lock = match lock {
         Ok(Some(l)) => l,

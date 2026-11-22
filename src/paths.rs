@@ -10,6 +10,17 @@ pub fn data_dir() -> Option<PathBuf> {
     std::env::home_dir().map(|h| h.join("Library/Application Support/work.okamyuji.wharfkeep"))
 }
 
+/// データ置き場を作り、権限を0700にする。
+/// `DirBuilder`の`mode`は新規作成にしか効かないので、作成済みの場合は`set_permissions`で直す。
+pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
 /// `path_env`（PATHの値）と既知の場所から実行ファイル`name`を探す。
 pub fn find_binary(name: &str, path_env: &str) -> Option<PathBuf> {
     let extra: Vec<PathBuf> = EXTRA_DIRS.iter().map(PathBuf::from).collect();
@@ -91,5 +102,36 @@ mod tests {
                 .unwrap()
                 .ends_with("Library/Application Support/work.okamyuji.wharfkeep")
         );
+    }
+
+    fn mode_of(p: &Path) -> u32 {
+        p.metadata().unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn ensure_private_dir_creates_missing_dirs_as_0700() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("a/b");
+        ensure_private_dir(&dir).unwrap();
+        assert_eq!(mode_of(&dir), 0o700);
+        assert_eq!(mode_of(&root.path().join("a")), 0o700);
+    }
+
+    #[test]
+    fn ensure_private_dir_tightens_an_existing_0755_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("data");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&dir).unwrap();
+        assert_eq!(mode_of(&dir), 0o700);
+    }
+
+    #[test]
+    fn ensure_private_dir_reports_an_uncreatable_path() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        assert!(ensure_private_dir(&file.join("sub")).is_err());
     }
 }
