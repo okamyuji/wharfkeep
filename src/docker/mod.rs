@@ -83,7 +83,8 @@ impl From<bollard::errors::Error> for DockerError {
     }
 }
 
-/// コンテナ・ボリューム・ネットワークの名前か ID。
+/// コンテナとボリュームの名前か ID、ネットワークの ID。
+/// ネットワークは `my net` や `x/y` のようにこの形に合わない名前でも作れるので、名前ではなく ID で渡す。
 /// bollard は名前を `/containers/{id}/...` などに埋め込むので、`/` や `?` を含む値は別の経路に当たる。
 /// 受け付ける形は moby の `daemon/names` の `RestrictedNamePattern`（`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`）と同じ。
 pub(crate) fn check_name(id: &str) -> Result<(), DockerError> {
