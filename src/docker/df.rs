@@ -11,7 +11,15 @@ use std::time::Duration;
 /// df は重い。GUI が状態ファイルを古いと見なす 15 秒より十分に短く切る。
 pub(super) const DF_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(super) type VolumeSizes = HashMap<String, Option<u64>>;
+/// `system df` が持つボリュームごとの使用状況。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct VolumeUse {
+    pub size: Option<u64>,
+    /// 参照するコンテナが0。取れなかった（`RefCount`が無いか-1）ときは偽にして、未使用と決めつけない。
+    pub unused: bool,
+}
+
+pub(super) type VolumeSizes = HashMap<String, VolumeUse>;
 
 /// `limit` を超えたら `Err` を返す。
 pub(super) async fn fetch(
@@ -27,12 +35,13 @@ pub(super) async fn fetch(
 }
 
 fn usage(resp: &SystemDataUsageResponse) -> (DiskUsage, VolumeSizes) {
-    let total = |t: Option<i64>| t.and_then(size_to_option);
+    // 欄がなければ不明。欄があってTotalSizeがないのは、mobyがomitemptyで0を省いたとき。
+    let total = |t: Option<Option<i64>>| t.map(|t| t.unwrap_or(0)).and_then(size_to_option);
     let disk = DiskUsage {
-        images: total(resp.image_usage.as_ref().and_then(|u| u.total_size)),
-        containers: total(resp.container_usage.as_ref().and_then(|u| u.total_size)),
-        volumes: total(resp.volume_usage.as_ref().and_then(|u| u.total_size)),
-        build_cache: total(resp.build_cache_usage.as_ref().and_then(|u| u.total_size)),
+        images: total(resp.image_usage.as_ref().map(|u| u.total_size)),
+        containers: total(resp.container_usage.as_ref().map(|u| u.total_size)),
+        volumes: total(resp.volume_usage.as_ref().map(|u| u.total_size)),
+        build_cache: total(resp.build_cache_usage.as_ref().map(|u| u.total_size)),
     };
     let volumes = resp
         .volume_usage
@@ -40,8 +49,10 @@ fn usage(resp: &SystemDataUsageResponse) -> (DiskUsage, VolumeSizes) {
         .flat_map(|u| u.items.iter().flatten())
         .filter_map(|v| {
             let name = v["Name"].as_str()?.to_string();
-            let size = v["UsageData"]["Size"].as_i64().and_then(size_to_option);
-            Some((name, size))
+            let usage = &v["UsageData"];
+            let size = usage["Size"].as_i64().and_then(size_to_option);
+            let unused = usage["RefCount"].as_i64() == Some(0);
+            Some((name, VolumeUse { size, unused }))
         })
         .collect();
     (disk, volumes)
@@ -62,6 +73,7 @@ mod tests {
             {"Name": "a", "UsageData": {"Size": 30, "RefCount": 1}},
             {"Name": "b", "UsageData": {"Size": -1, "RefCount": -1}},
             {"Name": "c"},
+            {"Name": "z", "UsageData": {"Size": 5, "RefCount": 0}},
             {"UsageData": {"Size": 9}}
         ]},
         "BuildCacheUsage": {"TotalSize": 123}
@@ -78,10 +90,12 @@ mod tests {
         assert_eq!(disk.containers, Some(12));
         assert_eq!(disk.volumes, Some(30));
         assert_eq!(disk.build_cache, Some(123));
-        assert_eq!(sizes["a"], Some(30));
-        assert_eq!(sizes["b"], None);
-        assert_eq!(sizes["c"], None);
-        assert_eq!(sizes.len(), 3);
+        let usage = |size, unused| VolumeUse { size, unused };
+        assert_eq!(sizes["a"], usage(Some(30), false));
+        assert_eq!(sizes["b"], usage(None, false));
+        assert_eq!(sizes["c"], usage(None, false));
+        assert_eq!(sizes["z"], usage(Some(5), true));
+        assert_eq!(sizes.len(), 4);
     }
 
     #[test]
@@ -96,6 +110,20 @@ mod tests {
         let (disk, _) =
             parse(r#"{"ImageUsage":{"TotalSize":-1},"BuildCacheUsage":{"TotalSize":0}}"#);
         assert_eq!(disk.images, None);
+        assert_eq!(disk.build_cache, Some(0));
+    }
+
+    #[test]
+    fn an_omitted_total_in_a_present_section_is_zero() {
+        // moby の型は TotalSize に omitempty が付き、合計が0だと欄ごと省く。
+        let (disk, _) = parse(
+            r#"{"ImageUsage":{"ActiveCount":1},"ContainerUsage":{},
+                "VolumeUsage":{"Items":[{"Name":"v","UsageData":{"Size":0,"RefCount":0}}]},
+                "BuildCacheUsage":{}}"#,
+        );
+        assert_eq!(disk.images, Some(0));
+        assert_eq!(disk.containers, Some(0));
+        assert_eq!(disk.volumes, Some(0));
         assert_eq!(disk.build_cache, Some(0));
     }
 
@@ -137,7 +165,7 @@ mod tests {
         serve(&sock, false);
         let (disk, sizes) = fetch(&docker(&sock), DF_TIMEOUT).await.unwrap();
         assert_eq!(disk.images, Some(1000));
-        assert_eq!(sizes["a"], Some(30));
+        assert_eq!(sizes["a"].size, Some(30));
     }
 
     #[tokio::test]

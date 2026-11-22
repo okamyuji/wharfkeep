@@ -23,7 +23,14 @@ fn main() -> ExitCode {
         .and_then(|()| InstanceLock::try_acquire(&dir.join(lock_name)));
     let _lock = match lock {
         Ok(Some(l)) => l,
-        // すでに動いているので何もしない。
+        // すでに動いている。GUIなら、開いているウィンドウを前面に出して終わる。
+        Ok(None) if sub.as_deref() == Some("gui") => {
+            if gui::raise_running(&dir.join(lock_name)) {
+                return ExitCode::SUCCESS;
+            }
+            eprintln!("wharfkeep: {}", Msg::RaiseFailed.text(lang));
+            return ExitCode::FAILURE;
+        }
         Ok(None) => return ExitCode::SUCCESS,
         Err(e) => {
             eprintln!(

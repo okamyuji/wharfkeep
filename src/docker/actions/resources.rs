@@ -1,11 +1,10 @@
-//! ボリューム・ネットワークの操作と、全体の整理。
+//! ボリュームとネットワークの操作。
 
 use super::{reclaimed, to_json};
 use crate::docker::{DockerError, Engine, check_name};
 use bollard::models::{NetworkCreateRequest, VolumeCreateRequest};
 use bollard::query_parameters::{
-    InspectNetworkOptions, PruneContainersOptions, PruneNetworksOptions, PruneVolumesOptions,
-    RemoveVolumeOptions,
+    InspectNetworkOptions, PruneNetworksOptions, PruneVolumesOptions, RemoveVolumeOptions,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +15,9 @@ pub enum NetDriver {
 }
 
 impl NetDriver {
-    fn as_str(self) -> &'static str {
+    pub const ALL: [NetDriver; 3] = [NetDriver::Bridge, NetDriver::Macvlan, NetDriver::Ipvlan];
+
+    pub fn as_str(self) -> &'static str {
         match self {
             NetDriver::Bridge => "bridge",
             NetDriver::Macvlan => "macvlan",
@@ -89,17 +90,6 @@ impl Engine {
             .await?;
         to_json(&r)
     }
-
-    /// 停止中のコンテナ、使われていないネットワーク、dangling イメージを消す。ボリュームは消さない。
-    pub async fn system_prune(&self) -> Result<u64, DockerError> {
-        let containers = self
-            .docker
-            .prune_containers(None::<PruneContainersOptions>)
-            .await?;
-        self.prune_networks().await?;
-        let images = self.prune_images(true).await?;
-        Ok(reclaimed(containers.space_reclaimed) + images)
-    }
 }
 
 #[cfg(test)]
@@ -111,5 +101,93 @@ mod tests {
         assert_eq!(NetDriver::Bridge.as_str(), "bridge");
         assert_eq!(NetDriver::Macvlan.as_str(), "macvlan");
         assert_eq!(NetDriver::Ipvlan.as_str(), "ipvlan");
+    }
+
+    use crate::docker::actions::fake::{fake_docker, route};
+
+    fn body_of(request: &str) -> serde_json::Value {
+        serde_json::from_str(request.split_once('\n').unwrap().1).unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_volume_posts_the_name() {
+        let f = fake_docker(vec![route(
+            "/volumes/create",
+            r#"{"Name":"data-1","Driver":"local","Mountpoint":"/m","Labels":{},"Options":{},"Scope":"local"}"#,
+        )]);
+        assert_eq!(f.engine.create_volume("data-1").await, Ok(()));
+        let seen = f.seen();
+        assert!(seen[0].starts_with("POST /"), "{}", seen[0]);
+        assert_eq!(body_of(&seen[0])["Name"], "data-1");
+        let f = fake_docker(vec![]);
+        assert!(f.engine.create_volume("data-1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_network_posts_the_name_with_spaces_and_the_driver() {
+        for (driver, want) in [
+            (NetDriver::Bridge, "bridge"),
+            (NetDriver::Macvlan, "macvlan"),
+            (NetDriver::Ipvlan, "ipvlan"),
+        ] {
+            let f = fake_docker(vec![route(
+                "/networks/create",
+                r#"{"Id":"n1","Warning":""}"#,
+            )]);
+            assert_eq!(f.engine.create_network("my net", driver).await, Ok(()));
+            let seen = f.seen();
+            assert!(seen[0].starts_with("POST /"), "{}", seen[0]);
+            let body = body_of(&seen[0]);
+            assert_eq!(body["Name"], "my net");
+            assert_eq!(body["Driver"], want);
+        }
+        let f = fake_docker(vec![]);
+        assert!(
+            f.engine
+                .create_network("x1", NetDriver::Bridge)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_volume_and_network_send_delete() {
+        let f = fake_docker(vec![
+            route("/volumes/data-1", ""),
+            route("/networks/abc1", ""),
+        ]);
+        assert_eq!(f.engine.remove_volume("data-1").await, Ok(()));
+        assert_eq!(f.engine.remove_network("abc1").await, Ok(()));
+        let seen = f.seen();
+        assert!(seen[0].starts_with("DELETE /") && seen[0].contains("/volumes/data-1"));
+        assert!(seen[1].starts_with("DELETE /") && seen[1].contains("/networks/abc1"));
+    }
+
+    #[tokio::test]
+    async fn prune_volumes_posts_and_returns_the_reclaimed_size() {
+        let f = fake_docker(vec![route(
+            "/volumes/prune",
+            r#"{"VolumesDeleted":["a"],"SpaceReclaimed":7}"#,
+        )]);
+        assert_eq!(f.engine.prune_volumes().await, Ok(7));
+        assert!(f.seen()[0].starts_with("POST /"));
+        let f = fake_docker(vec![route("/volumes/prune", "{}")]);
+        assert_eq!(f.engine.prune_volumes().await, Ok(0));
+        let f = fake_docker(vec![]);
+        assert!(f.engine.prune_volumes().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn prune_networks_counts_the_deleted_ones() {
+        let f = fake_docker(vec![route(
+            "/networks/prune",
+            r#"{"NetworksDeleted":["a","b"]}"#,
+        )]);
+        assert_eq!(f.engine.prune_networks().await, Ok(2));
+        assert!(f.seen()[0].starts_with("POST /"));
+        let f = fake_docker(vec![route("/networks/prune", "{}")]);
+        assert_eq!(f.engine.prune_networks().await, Ok(0));
+        let f = fake_docker(vec![]);
+        assert!(f.engine.prune_networks().await.is_err());
     }
 }

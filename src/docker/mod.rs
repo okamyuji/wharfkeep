@@ -6,7 +6,7 @@ mod logs;
 
 use crate::i18n::{Lang, Msg};
 use crate::snapshot::{ContainerRow, DockerSummary, ImageRow, NetworkRow, VolumeRow};
-use bollard::models::{ContainerSummary, PortSummary};
+use bollard::models::{ContainerSummary, PortSummary, Volume};
 use bollard::query_parameters::{
     EventsOptionsBuilder, ListContainersOptionsBuilder, ListImagesOptions, ListNetworksOptions,
     ListVolumesOptions,
@@ -53,6 +53,8 @@ pub enum DockerError {
     /// bollard が返した本文。表示用の文言の後ろにそのまま付ける。
     Api(String),
     InvalidPort(String),
+    InvalidEnv(String),
+    InvalidMount(String),
     /// 名前・ID・イメージ参照が、URL の一部として安全な形ではない。
     InvalidId(String),
 }
@@ -64,6 +66,8 @@ impl DockerError {
             Self::Connect(e) => format!("{}: {e}", t(Msg::DockerConnect)),
             Self::Api(e) => format!("{}: {e}", t(Msg::DockerApi)),
             Self::InvalidPort(s) => format!("{}: {s}", t(Msg::DockerPort)),
+            Self::InvalidEnv(s) => format!("{}: {s:?}", t(Msg::DockerEnv)),
+            Self::InvalidMount(s) => format!("{}: {s:?}", t(Msg::DockerMount)),
             Self::InvalidId(s) => format!("{}: {s:?}", t(Msg::DockerInvalidId)),
         }
     }
@@ -99,10 +103,14 @@ pub(crate) fn check_name(id: &str) -> Result<(), DockerError> {
     }
 }
 
+/// 文法上いちばん長い参照の字数。名前（255）、`:` とタグ（1 + 128）、`@` と sha512 の digest（1 + 7 + 128）。
+const IMAGE_REF_MAX: usize = NAME_TOTAL_LENGTH_MAX + 1 + 128 + 1 + 7 + 128;
+
 /// イメージの名前・タグ・ID・digest を受ける。`/`・`:`・`@` は参照の文法（distribution/reference の
 /// `regexp.go`）で正当なので、文字集合をその範囲に絞り、`.` と `..` と空のパス要素と先頭の `-` を拒む。
 pub(crate) fn check_image_ref(r: &str) -> Result<(), DockerError> {
-    let valid = !r.starts_with('-')
+    let valid = r.len() <= IMAGE_REF_MAX
+        && !r.starts_with('-')
         && r.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '/' | ':' | '@' | '+')
         })
@@ -111,6 +119,84 @@ pub(crate) fn check_image_ref(r: &str) -> Result<(), DockerError> {
         Ok(())
     } else {
         Err(DockerError::InvalidId(r.to_string()))
+    }
+}
+
+/// `docker tag` のリポジトリ名。distribution/reference の `reference.go` の文法
+/// `name := [domain '/'] remote-name` に従う。パスの部分は小文字の英数字を `.`、`_`、`__`、`-` の並びでつなぐ。
+pub(crate) fn check_repo(r: &str) -> Result<(), DockerError> {
+    let parts: Vec<&str> = r.split('/').collect();
+    let remote = |p: &[&str]| !p.is_empty() && p.iter().all(|c| is_path_component(c));
+    let valid = r.len() <= NAME_TOTAL_LENGTH_MAX
+        && (remote(&parts) || (is_domain(parts[0]) && remote(&parts[1..])));
+    if valid {
+        Ok(())
+    } else {
+        Err(DockerError::InvalidId(r.to_string()))
+    }
+}
+
+/// distribution/reference の `NameTotalLengthMax`。
+const NAME_TOTAL_LENGTH_MAX: usize = 255;
+
+/// `alpha-numeric [separator alpha-numeric]*`。`separator := [_.] | __ | [-]+`。
+fn is_path_component(c: &str) -> bool {
+    let alnum = |ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit();
+    let mut rest = c;
+    loop {
+        let run = rest.len() - rest.trim_start_matches(alnum).len();
+        if run == 0 {
+            return false;
+        }
+        rest = &rest[run..];
+        if rest.is_empty() {
+            return true;
+        }
+        let sep = rest.len() - rest.trim_start_matches(['.', '_', '-']).len();
+        let ok = match &rest[..sep] {
+            "." | "_" | "__" => true,
+            s => !s.is_empty() && s.chars().all(|ch| ch == '-'),
+        };
+        if !ok {
+            return false;
+        }
+        rest = &rest[sep..];
+    }
+}
+
+/// `host [':' port-number]`。host は `.` でつないだ英数字とハイフンの部分か、`[` と `]` で囲んだ IPv6。
+fn is_domain(d: &str) -> bool {
+    let (host, port) = match d.rsplit_once(':') {
+        Some((h, p)) if !h.starts_with('[') || h.ends_with(']') => (h, Some(p)),
+        _ => (d, None),
+    };
+    if port.is_some_and(|p| p.is_empty() || !p.chars().all(|ch| ch.is_ascii_digit())) {
+        return false;
+    }
+    if let Some(v6) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        return !v6.is_empty() && v6.chars().all(|ch| ch.is_ascii_hexdigit() || ch == ':');
+    }
+    host.split('.').all(|part| {
+        !part.is_empty()
+            && !part.starts_with('-')
+            && !part.ends_with('-')
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    })
+}
+
+/// `docker tag` のタグ。distribution/reference の `tag := [\w][\w.-]{0,127}`。
+pub(crate) fn check_tag(t: &str) -> Result<(), DockerError> {
+    let word = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
+    let mut chars = t.chars();
+    let valid = t.len() <= 128
+        && chars.next().is_some_and(word)
+        && chars.all(|ch| word(ch) || matches!(ch, '.' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(DockerError::InvalidId(t.to_string()))
     }
 }
 
@@ -139,7 +225,7 @@ impl Engine {
             // df が取れなくても（遅くて打ち切った場合も）一覧は出す。サイズだけ不明にする。
             df::fetch(&self.docker, df::DF_TIMEOUT),
         );
-        let (disk, volume_sizes) = df.unwrap_or_default();
+        let (disk, volume_usage) = df.unwrap_or_default();
         Ok(DockerSummary {
             containers: self.container_rows(containers?).await,
             images: images?
@@ -155,11 +241,9 @@ impl Engine {
                 .volumes
                 .unwrap_or_default()
                 .into_iter()
-                .map(|v| VolumeRow {
-                    size_bytes: volume_sizes.get(&v.name).copied().flatten(),
-                    name: v.name,
-                    driver: v.driver,
-                    mountpoint: v.mountpoint,
+                .map(|v| {
+                    let usage = volume_usage.get(&v.name).copied().unwrap_or_default();
+                    volume_row(v, usage)
                 })
                 .collect(),
             networks: networks?
@@ -190,6 +274,7 @@ impl Engine {
             ContainerRow {
                 name: container_name(c.names.as_deref().unwrap_or_default()),
                 image: c.image.unwrap_or_default(),
+                image_id: c.image_id.unwrap_or_default(),
                 status: c.status.unwrap_or_default(),
                 ports: format_ports(c.ports.as_deref().unwrap_or_default()),
                 id,
@@ -271,6 +356,19 @@ pub fn format_ports(ports: &[PortSummary]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Dockerが無名ボリュームに付けるラベル。名前の形でなくこれで見分ける。
+const ANONYMOUS_VOLUME_LABEL: &str = "com.docker.volume.anonymous";
+
+fn volume_row(v: Volume, usage: df::VolumeUse) -> VolumeRow {
+    VolumeRow {
+        prunable: usage.unused && v.labels.contains_key(ANONYMOUS_VOLUME_LABEL),
+        size_bytes: usage.size,
+        name: v.name,
+        driver: v.driver,
+        mountpoint: v.mountpoint,
+    }
 }
 
 pub fn is_builtin_network(name: &str) -> bool {
@@ -439,6 +537,121 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn summary_maps_every_list_and_marks_prunable_volumes() {
+        use crate::docker::actions::fake::{fake_docker, route};
+        let f = fake_docker(vec![
+            route(
+                "/containers/json",
+                r#"[{"Id":"c1","Names":["/web"],"Image":"docker.io/library/nginx:alpine","ImageID":"sha256:aa","State":"running","Status":"Up"}]"#,
+            ),
+            route(
+                "/images/json",
+                r#"[{"Id":"sha256:aa","ParentId":"","RepoTags":["nginx:alpine"],"RepoDigests":[],"Created":1000,"Size":2048,"SharedSize":0,"Labels":{},"Containers":0}]"#,
+            ),
+            route(
+                "/volumes",
+                r#"{"Volumes":[
+                    {"Name":"anon1","Driver":"local","Mountpoint":"/m1","Labels":{"com.docker.volume.anonymous":""},"Options":{},"Scope":"local"},
+                    {"Name":"named","Driver":"local","Mountpoint":"/m2","Labels":{},"Options":{},"Scope":"local"},
+                    {"Name":"busy","Driver":"local","Mountpoint":"/m3","Labels":{"com.docker.volume.anonymous":""},"Options":{},"Scope":"local"}
+                ],"Warnings":[]}"#,
+            ),
+            route(
+                "/networks",
+                r#"[{"Id":"n1","Name":"bridge","Driver":"bridge"},{"Id":"n2","Name":"my net","Driver":"bridge"}]"#,
+            ),
+            route(
+                "/system/df",
+                r#"{"VolumeUsage":{"TotalSize":30,"Items":[
+                    {"Name":"anon1","UsageData":{"Size":10,"RefCount":0}},
+                    {"Name":"named","UsageData":{"Size":20,"RefCount":0}},
+                    {"Name":"busy","UsageData":{"Size":5,"RefCount":2}}
+                ]},"BuildCacheUsage":{"TotalSize":7}}"#,
+            ),
+        ]);
+        let summary = f.engine.summary().await.unwrap();
+        let volumes: Vec<_> = summary
+            .volumes
+            .iter()
+            .map(|v| (v.name.as_str(), v.size_bytes, v.prunable))
+            .collect();
+        assert_eq!(
+            volumes,
+            [
+                ("anon1", Some(10), true),
+                ("named", Some(20), false),
+                ("busy", Some(5), false)
+            ]
+        );
+        assert_eq!(summary.volumes[0].driver, "local");
+        assert_eq!(summary.volumes[0].mountpoint, "/m1");
+        assert_eq!(summary.images[0].repo_tags, ["nginx:alpine"]);
+        assert_eq!(
+            summary.containers[0].image,
+            "docker.io/library/nginx:alpine"
+        );
+        assert_eq!(summary.containers[0].image_id, "sha256:aa");
+        assert_eq!(summary.images[0].size_bytes, 2048);
+        let nets: Vec<_> = summary
+            .networks
+            .iter()
+            .map(|n| (n.id.as_str(), n.name.as_str(), n.builtin))
+            .collect();
+        assert_eq!(nets, [("n1", "bridge", true), ("n2", "my net", false)]);
+        assert_eq!(summary.disk.build_cache, Some(7));
+    }
+
+    #[tokio::test]
+    async fn summary_still_lists_volumes_when_df_fails() {
+        use crate::docker::actions::fake::{fake_docker, route};
+        let f = fake_docker(vec![
+            route("/containers/json", "[]"),
+            route("/images/json", "[]"),
+            route(
+                "/volumes",
+                r#"{"Volumes":[{"Name":"anon1","Driver":"local","Mountpoint":"/m1","Labels":{"com.docker.volume.anonymous":""},"Options":{},"Scope":"local"}]}"#,
+            ),
+            route("/networks", "[]"),
+        ]);
+        let summary = f.engine.summary().await.unwrap();
+        // dfが取れないときは、使用中かどうかを決めつけず、片付けの対象にしない。
+        assert_eq!(summary.volumes[0].size_bytes, None);
+        assert!(!summary.volumes[0].prunable);
+    }
+
+    #[test]
+    fn only_unused_anonymous_volumes_are_prunable() {
+        let volume = |anonymous: bool| Volume {
+            name: "v1".into(),
+            driver: "local".into(),
+            mountpoint: "/m".into(),
+            labels: if anonymous {
+                HashMap::from([(ANONYMOUS_VOLUME_LABEL.to_string(), String::new())])
+            } else {
+                HashMap::new()
+            },
+            ..Default::default()
+        };
+        let usage = |unused| df::VolumeUse {
+            size: Some(9),
+            unused,
+        };
+        let row = volume_row(volume(true), usage(true));
+        assert!(row.prunable);
+        assert_eq!(
+            (
+                row.name.as_str(),
+                row.driver.as_str(),
+                row.mountpoint.as_str()
+            ),
+            ("v1", "local", "/m")
+        );
+        assert_eq!(row.size_bytes, Some(9));
+        assert!(!volume_row(volume(true), usage(false)).prunable);
+        assert!(!volume_row(volume(false), usage(true)).prunable);
+    }
+
     #[test]
     fn container_name_drops_leading_slash() {
         assert_eq!(container_name(&["/web".into(), "/x/alias".into()]), "web");
@@ -502,6 +715,24 @@ mod tests {
     }
 
     #[test]
+    fn image_ref_length_is_capped_at_the_longest_valid_reference() {
+        // 文法上いちばん長い形（名前、タグ、sha512のdigest）が通り、1字でも長ければ拒む。
+        let longest = format!(
+            "{}:{}@sha512:{}",
+            "a".repeat(NAME_TOTAL_LENGTH_MAX),
+            "t".repeat(128),
+            "0".repeat(128)
+        );
+        assert_eq!(longest.len(), 520);
+        assert_eq!(check_image_ref(&longest), Ok(()));
+        let long = format!("{longest}0");
+        assert_eq!(
+            check_image_ref(&long),
+            Err(DockerError::InvalidId(long.clone()))
+        );
+    }
+
+    #[test]
     fn image_ref_rejects_url_syntax_and_odd_shapes() {
         for bad in [
             "",
@@ -532,6 +763,81 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn repo_names_follow_the_distribution_reference_grammar() {
+        let long_ok = "a".repeat(255);
+        for ok in [
+            "app",
+            "o/app",
+            "ghcr.io/o/app",
+            "localhost:5000/x",
+            "Registry.Example.com:443/team/app",
+            "[::1]:5000/app",
+            "[::1]/app",
+            "My-Registry.io:5000/app",
+            "a.b_c__d---e/f",
+            "x-y",
+            long_ok.as_str(),
+        ] {
+            assert_eq!(check_repo(ok), Ok(()), "{ok}");
+        }
+        let long_bad = "a".repeat(256);
+        for bad in [
+            "",
+            "App",
+            "o/App",
+            "app:v1",
+            "app@sha256:00",
+            "-app",
+            "app-",
+            "a..b",
+            "a___b",
+            "a._b",
+            "o//app",
+            "/app",
+            "app/",
+            "a b",
+            "-x.io/app",
+            "x.io:port/app",
+            "[]/app",
+            "[zz]/app",
+            "aB",
+            "app.",
+            long_bad.as_str(),
+        ] {
+            assert_eq!(
+                check_repo(bad),
+                Err(DockerError::InvalidId(bad.into())),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tags_follow_the_distribution_reference_grammar() {
+        let max = format!("v{}", "1".repeat(127));
+        for ok in ["latest", "v1.2-rc_3", "_x", "V1", "1", max.as_str()] {
+            assert_eq!(check_tag(ok), Ok(()), "{ok}");
+        }
+        let too_long = format!("v{}", "1".repeat(128));
+        for bad in ["", ".x", "-x", "a b", "a/b", "a:b", "é", too_long.as_str()] {
+            assert_eq!(
+                check_tag(bad),
+                Err(DockerError::InvalidId(bad.into())),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tag_rejects_a_bad_repo_or_tag_before_calling_docker() {
+        use crate::docker::actions::fake::fake_docker;
+        let f = fake_docker(vec![]);
+        assert!(f.engine.tag("x:1", "App", "v1").await.is_err());
+        assert!(f.engine.tag("x:1", "app", "a b").await.is_err());
+        assert!(f.seen().is_empty());
     }
 
     #[test]

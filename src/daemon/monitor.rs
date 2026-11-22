@@ -248,10 +248,22 @@ pub(crate) async fn run_action(
     wake: Arc<Notify>,
     lang: Lang,
 ) -> Option<String> {
+    run_action_with(colima, args, wake, lang, |_| {}).await
+}
+
+/// `run_action`に、出力の各行を受け取る口を足したもの。GUIが作成と起動の進み具合を映すために使う。
+pub(crate) async fn run_action_with(
+    colima: Colima,
+    args: Vec<String>,
+    wake: Arc<Notify>,
+    lang: Lang,
+    mut on_line: impl FnMut(&str),
+) -> Option<String> {
     let (mut rx, handle) = colima.run_streaming(args.clone());
     // 失敗の理由として最後の数行だけ残す。
     let mut tail = VecDeque::new();
     while let Some(line) = rx.recv().await {
+        on_line(&line);
         if tail.len() == ACTION_TAIL_LINES {
             tail.pop_front();
         }
@@ -613,6 +625,24 @@ esac"#,
         assert!(!r.contains("line2"), "{r}");
         assert!(r.contains('3'), "{r}");
         woken(&wake).await;
+    }
+
+    #[tokio::test]
+    async fn action_hands_every_output_line_to_the_caller_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake_colima(&d, "for i in 1 2 3 4 5 6 7; do echo line$i; done");
+        let mut seen = Vec::new();
+        let r = run_action_with(c, vec![], Arc::new(Notify::new()), Lang::En, |l| {
+            seen.push(l.to_string())
+        })
+        .await;
+        assert_eq!(r, None);
+        assert_eq!(
+            seen,
+            [
+                "line1", "line2", "line3", "line4", "line5", "line6", "line7"
+            ]
+        );
     }
 
     #[tokio::test]

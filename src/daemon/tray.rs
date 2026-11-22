@@ -111,13 +111,16 @@ pub fn icon_state(s: &Snapshot) -> IconState {
 }
 
 /// `size`×`size`の塗りつぶした丸のRGBA（乗算済みでないアルファ）。画像ファイルを同梱しないため描く。
-pub fn icon_rgba(state: IconState, size: u32) -> Vec<u8> {
-    let c = size as f32 / 2.0;
-    let r2 = (c - 1.0) * (c - 1.0);
-    (0..size * size)
+pub fn icon_rgba(state: IconState) -> Vec<u8> {
+    // 36画素の格子に描く輸送用コンテナ。上下の縁と左右の柱のあいだに、縦の溝を3本入れる。
+    (0..ICON_PIXELS * ICON_PIXELS)
         .flat_map(|i| {
-            let (x, y) = ((i % size) as f32 + 0.5 - c, (i / size) as f32 + 0.5 - c);
-            if x * x + y * y <= r2 {
+            let (x, y) = (i % ICON_PIXELS, i / ICON_PIXELS);
+            let inside = (2..34).contains(&x) && (8..28).contains(&y);
+            let corner = matches!(x, 2 | 33) && matches!(y, 8 | 27);
+            let rail = !(10..26).contains(&y);
+            let groove = matches!(x, 9 | 10 | 17 | 18 | 25 | 26);
+            if inside && !corner && (rail || !groove) {
                 state.color()
             } else {
                 [0, 0, 0, 0]
@@ -277,7 +280,7 @@ fn ns_image(icon: IconState) -> Retained<NSImage> {
         )
     };
     if let Some(rep) = rep {
-        let rgba = icon_rgba(icon, ICON_PIXELS);
+        let rgba = icon_rgba(icon);
         assert_eq!(rgba.len(), (ICON_PIXELS * ICON_PIXELS * 4) as usize);
         // SAFETY: 確保した`bitmapData`は`px * 4 * px`（36 x 36 x 4）バイトで非null。`icon_rgba`は
         // 同じ`ICON_PIXELS`から同じ長さのVecを返し、別々の確保なので重ならない。`rep`はここで生きている。
@@ -479,28 +482,68 @@ mod tests {
 
     #[test]
     fn icon_colors_per_state() {
-        let size = 36;
-        let center = |s| pixel(&icon_rgba(s, size), size, size / 2, size / 2);
-        assert_eq!(center(IconState::Error), [0xD2, 0x66, 0x5A, 0xFF]);
-        assert_eq!(center(IconState::Normal), [0x25, 0x63, 0xEB, 0xFF]);
-        assert_eq!(center(IconState::Idle), [0x25, 0x63, 0xEB, 115]);
+        // 溝にかからない胴の画素で色を見る。
+        let panel = |s| pixel(&icon_rgba(s), ICON_PIXELS, 13, 18);
+        assert_eq!(panel(IconState::Error), [0xD2, 0x66, 0x5A, 0xFF]);
+        assert_eq!(panel(IconState::Normal), [0x25, 0x63, 0xEB, 0xFF]);
+        assert_eq!(panel(IconState::Idle), [0x25, 0x63, 0xEB, 115]);
     }
 
     #[test]
-    fn icon_is_a_circle_with_transparent_corners() {
-        let size = 36;
-        let px = icon_rgba(IconState::Normal, size);
-        assert_eq!(px.len(), (size * size * 4) as usize);
-        for (x, y) in [(0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)] {
-            assert_eq!(pixel(&px, size, x, y), [0, 0, 0, 0], "({x},{y})");
+    fn icon_is_a_ribbed_container() {
+        let px = icon_rgba(IconState::Normal);
+        assert_eq!(px.len(), (ICON_PIXELS * ICON_PIXELS * 4) as usize);
+        let alpha = |x, y| pixel(&px, ICON_PIXELS, x, y)[3];
+        let opaque = [
+            // 箱の左右と上下の端の画素。
+            (2, 18),
+            (33, 18),
+            (17, 8),
+            (17, 27),
+            // 角の隣は残る。
+            (3, 8),
+            (2, 9),
+            (32, 27),
+            (33, 26),
+            // 上下の縁は溝の列でも途切れない。
+            (9, 9),
+            (18, 8),
+            (26, 26),
+            (25, 27),
+            // 溝の両隣の胴。
+            (8, 18),
+            (11, 18),
+            (16, 18),
+            (19, 18),
+            (24, 18),
+            (27, 18),
+        ];
+        let transparent = [
+            // 箱の外。上下に余白があり、横長に見える。
+            (0, 0),
+            (35, 35),
+            (1, 18),
+            (34, 18),
+            (17, 7),
+            (17, 28),
+            // 角は1画素落として丸く見せる。
+            (2, 8),
+            (33, 8),
+            (2, 27),
+            (33, 27),
+            // 縦の溝3本。縁のすぐ内側から始まり、縁のすぐ内側で終わる。
+            (9, 10),
+            (10, 18),
+            (17, 18),
+            (18, 25),
+            (25, 10),
+            (26, 25),
+        ];
+        for (x, y) in opaque {
+            assert_eq!(alpha(x, y), 0xFF, "opaque ({x},{y})");
         }
-        // 半径17の円。端の1画素は外、その内側の画素は中に入る。
-        let mid = size / 2;
-        for (x, y) in [(0, mid), (size - 1, mid), (mid, 0), (mid, size - 1)] {
-            assert_eq!(pixel(&px, size, x, y)[3], 0, "({x},{y})");
-        }
-        for (x, y) in [(1, mid), (size - 2, mid), (mid, 1), (mid, size - 2)] {
-            assert_eq!(pixel(&px, size, x, y)[3], 0xFF, "({x},{y})");
+        for (x, y) in transparent {
+            assert_eq!(alpha(x, y), 0, "transparent ({x},{y})");
         }
     }
 }

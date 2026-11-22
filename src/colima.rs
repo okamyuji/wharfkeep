@@ -144,6 +144,52 @@ pub enum MountType {
     NineP,
 }
 
+impl VmType {
+    pub const ALL: [VmType; 2] = [VmType::Vz, VmType::Qemu];
+
+    /// `colima start --vm-type`の値。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VmType::Vz => "vz",
+            VmType::Qemu => "qemu",
+        }
+    }
+}
+
+impl Arch {
+    pub const ALL: [Arch; 2] = [Arch::Aarch64, Arch::X86_64];
+
+    /// このMacのアーキテクチャ。
+    pub fn host() -> Arch {
+        if cfg!(target_arch = "aarch64") {
+            Arch::Aarch64
+        } else {
+            Arch::X86_64
+        }
+    }
+
+    /// `colima start --arch`の値。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Arch::Aarch64 => "aarch64",
+            Arch::X86_64 => "x86_64",
+        }
+    }
+}
+
+impl MountType {
+    pub const ALL: [MountType; 3] = [MountType::Virtiofs, MountType::Sshfs, MountType::NineP];
+
+    /// `colima start --mount-type`の値。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MountType::Virtiofs => "virtiofs",
+            MountType::Sshfs => "sshfs",
+            MountType::NineP => "9p",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateSpec {
     pub profile: String,
@@ -186,19 +232,11 @@ pub fn start_args(spec: &CreateSpec) -> Result<Vec<String>, ColimaError> {
     if spec.disk_gib == 0 {
         return Err(ColimaError::InvalidDisk);
     }
-    let vm = match spec.vm_type {
-        VmType::Vz => "vz",
-        VmType::Qemu => "qemu",
-    };
-    let arch = match spec.arch {
-        Arch::Aarch64 => "aarch64",
-        Arch::X86_64 => "x86_64",
-    };
-    let mount = match spec.mount_type {
-        MountType::Virtiofs => "virtiofs",
-        MountType::Sshfs => "sshfs",
-        MountType::NineP => "9p",
-    };
+    let (vm, arch, mount) = (
+        spec.vm_type.as_str(),
+        spec.arch.as_str(),
+        spec.mount_type.as_str(),
+    );
     Ok([
         "start",
         &spec.profile,
@@ -237,6 +275,12 @@ pub fn simple_args(action: Action, profile: &str) -> Result<Vec<String>, ColimaE
     Ok(v)
 }
 
+/// インスタンスのシェルを開く引数。コマンドを付けないので`--`は要らない。
+pub fn ssh_args(profile: &str) -> Result<Vec<String>, ColimaError> {
+    check_profile(profile)?;
+    Ok(["ssh", "-p", profile].map(String::from).to_vec())
+}
+
 /// `list` と `status` の待ち時間。`start` などの長い処理は `run_streaming` を通るので対象外。
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 /// JSON を読むための stdout の上限。`colima list --json` は数 KiB なので十分に大きい。
@@ -264,6 +308,10 @@ impl Colima {
             .chain(std::env::split_paths(&inherited));
         let path_env = std::env::join_paths(dirs).unwrap_or(inherited);
         Self { bin, path_env }
+    }
+
+    pub fn bin(&self) -> &Path {
+        &self.bin
     }
 
     pub async fn list(&self) -> Result<Vec<Instance>, ColimaError> {

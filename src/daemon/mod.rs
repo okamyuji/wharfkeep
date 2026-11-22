@@ -1,7 +1,7 @@
 //! 常駐するデーモン。監視は別スレッドのtokioで回し、AppKitのスレッドはwinitのイベントで結果を受けるだけにする。
 
 pub mod autostart;
-mod monitor;
+pub(crate) mod monitor;
 pub mod tray;
 
 use crate::colima::{self, Action, Colima};

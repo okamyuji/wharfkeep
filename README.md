@@ -14,6 +14,7 @@ wharfkeep runs as two processes. A small daemon stays in the menu bar and keeps 
   - dark blue when everything is fine, including containers you stopped yourself,
   - pale blue when no Colima instance is running.
 - Start and stop Colima instances from the menu bar.
+- Change things from the window: run, rename and delete containers, create and delete Colima instances, and delete or clean up images, volumes, networks and the build cache. A confirmation dialog appears before anything is deleted.
 - Watches containers, images, volumes, networks and disk usage through the Docker Engine API of each running instance.
 - Starts at login through a launchd LaunchAgent. You can turn this off from the menu bar.
 - English and Japanese. The language follows the macOS language setting.
@@ -36,6 +37,8 @@ cp -R target/wharfkeep.app /Applications/
 open /Applications/wharfkeep.app
 ```
 
+`scripts/bundle.sh` stamps the bundle with the version in `Cargo.toml`, then raises the patch number in `Cargo.toml` and `Cargo.lock` for the next build.
+
 The first launch registers the app in `/Applications` to start at login. If an older copy is already running, choose **Quit** from its menu bar item before you open the new one.
 
 ## Usage
@@ -49,6 +52,8 @@ The app bundle runs the daemon by default. You can also run each part from a ter
 /Applications/wharfkeep.app/Contents/MacOS/wharfkeep gui      # window
 ```
 
+In the window you can run and rename containers, create and delete instances, and delete or clean up images, volumes, networks and the build cache. Every delete asks for confirmation first.
+
 Only one daemon and one window run at a time. A binary run from outside an app bundle, such as `target/debug/wharfkeep`, leaves the login item unchanged.
 
 ### Configuration
@@ -56,6 +61,7 @@ Only one daemon and one window run at a time. A binary run from outside an app b
 | Environment variable | Values | Effect |
 |---|---|---|
 | `WHARFKEEP_LANG` | `en`, `ja` | Overrides the language taken from macOS. |
+| `WHARFKEEP_PROFILE` | colima instance name | Selects this instance when the window opens. `scripts/e2e.sh` uses it to run on a dedicated instance. |
 
 ### Files
 
@@ -72,7 +78,21 @@ cargo deny check licenses
 
 Tests that need a running Colima instance or open a Terminal window are ignored by default. Run them with `cargo test -- --ignored`.
 
-`scripts/e2e.sh` tests the bundle that `scripts/bundle.sh` built. It launches the app the way macOS does, uses the menu bar through the Accessibility API, opens and closes the window, and checks the state file and screenshots. It needs Accessibility and Screen Recording permission for your terminal and a running Colima instance. It changes the login item while it runs.
+`scripts/e2e.sh` tests the bundle that `scripts/bundle.sh` built. It launches the app the way macOS does, uses the menu bar through the Accessibility API, opens and closes the window, and checks the state file and screenshots. It needs Accessibility and Screen Recording permission for your terminal and a running Colima instance. It stops with an error when the screen is locked. It creates an instance named `wk-e2e` for the delete and cleanup checks and deletes it at the end; it stops when an instance with that name already exists. It stops `default` once and starts it again. It changes the login item while it runs.
+
+## Screenshots
+
+The dashboard. The bar on the left of a card turns coral when a container failed to start.
+
+![Dashboard](docs/images/dashboard.png)
+
+The container list. Each row has its own start, stop, pause, restart, logs, shell, rename and delete buttons, and a status bar on the left.
+
+![Containers](docs/images/containers.png)
+
+Cleaning up images. Every delete asks for confirmation first.
+
+![Clean up images](docs/images/cleanup.png)
 
 ## License
 

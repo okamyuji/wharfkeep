@@ -1,5 +1,7 @@
 //! コンテナ・イメージ・ボリューム・ネットワークの操作。
 
+#[cfg(test)]
+pub(super) mod fake;
 mod images;
 mod resources;
 
@@ -57,6 +59,25 @@ pub enum RestartPolicy {
     OnFailure,
 }
 
+impl RestartPolicy {
+    pub const ALL: [RestartPolicy; 4] = [
+        RestartPolicy::No,
+        RestartPolicy::Always,
+        RestartPolicy::UnlessStopped,
+        RestartPolicy::OnFailure,
+    ];
+
+    /// `docker run --restart`と同じ名前。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RestartPolicy::No => "no",
+            RestartPolicy::Always => "always",
+            RestartPolicy::UnlessStopped => "unless-stopped",
+            RestartPolicy::OnFailure => "on-failure",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSpec {
     pub image: String,
@@ -102,6 +123,50 @@ pub fn parse_port_map(s: &str) -> Result<PortMap, DockerError> {
             proto,
         }),
         None => Err(DockerError::InvalidPort(s.to_string())),
+    }
+}
+
+/// `KEY=VALUE`。値は最初の `=` より後ろすべてで、空でもよい。キーは空白と制御文字を含まない。
+/// 値は改行を含んでよいが、NULはexecveの環境変数に入らないので拒む。
+pub fn parse_env(s: &str) -> Result<(String, String), DockerError> {
+    match s.split_once('=') {
+        Some((k, v))
+            if !k.is_empty()
+                && !k.contains(|c: char| c.is_whitespace() || c.is_control())
+                && !v.contains('\0') =>
+        {
+            Ok((k.to_string(), v.to_string()))
+        }
+        _ => Err(DockerError::InvalidEnv(s.to_string())),
+    }
+}
+
+/// `SOURCE:TARGET` か `SOURCE:TARGET:ro`（`:rw` も可）。`docker run -v` と同じ形。TARGET は絶対パス。
+/// SOURCE は絶対パスか、ボリューム名（moby の RestrictedNamePattern）。`../x` や `~/x` は docker が
+/// ボリューム名として拒むので、ここで先に分かりやすく止める。
+pub fn parse_mount(s: &str) -> Result<Mount, DockerError> {
+    if s.contains(char::is_control) {
+        return Err(DockerError::InvalidMount(s.to_string()));
+    }
+    let parts: Vec<&str> = s.split(':').collect();
+    let read_only = match parts.get(2).copied() {
+        None | Some("rw") => false,
+        Some("ro") => true,
+        Some(_) => return Err(DockerError::InvalidMount(s.to_string())),
+    };
+    match parts[..] {
+        [source, target, ..]
+            if parts.len() <= 3
+                && (source.starts_with('/') || check_name(source).is_ok())
+                && target.starts_with('/') =>
+        {
+            Ok(Mount {
+                source: source.to_string(),
+                target: target.to_string(),
+                read_only,
+            })
+        }
+        _ => Err(DockerError::InvalidMount(s.to_string())),
     }
 }
 
@@ -411,6 +476,76 @@ mod tests {
             restart: RestartPolicy::UnlessStopped,
             cmd: Some(vec!["sleep".into(), "1".into()]),
         }
+    }
+
+    #[test]
+    fn parse_env_splits_at_the_first_equals_sign() {
+        assert_eq!(parse_env("A=1"), Ok(("A".into(), "1".into())));
+        assert_eq!(parse_env("URL=a=b c"), Ok(("URL".into(), "a=b c".into())));
+        assert_eq!(parse_env("EMPTY="), Ok(("EMPTY".into(), String::new())));
+        assert_eq!(parse_env("MULTI=a\nb"), Ok(("MULTI".into(), "a\nb".into())));
+        for bad in [
+            "",
+            "=x",
+            "noequals",
+            "A B=1",
+            "\tA=1",
+            "A\0B=1",
+            "A\u{1b}=1",
+            "A=x\0y",
+        ] {
+            assert_eq!(
+                parse_env(bad),
+                Err(DockerError::InvalidEnv(bad.into())),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_mount_takes_source_target_and_an_optional_mode() {
+        let m = |source: &str, target: &str, read_only| Mount {
+            source: source.into(),
+            target: target.into(),
+            read_only,
+        };
+        assert_eq!(parse_mount("/host:/data"), Ok(m("/host", "/data", false)));
+        assert_eq!(parse_mount("vol:/v:ro"), Ok(m("vol", "/v", true)));
+        assert_eq!(parse_mount("vol:/v:rw"), Ok(m("vol", "/v", false)));
+        for bad in [
+            "",
+            "x",
+            ":/b",
+            "src:relative",
+            "a:/b:xx",
+            "a:/b:ro:x",
+            "a:",
+            "v:/data",
+            "../x:/y",
+            "~/d:/y",
+            "./d:/y",
+            "-v:/y",
+            "/a\0b:/y",
+            "/a:/b\0",
+            "/a:/b\n",
+        ] {
+            assert_eq!(
+                parse_mount(bad),
+                Err(DockerError::InvalidMount(bad.into())),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_and_mount_errors_are_in_both_languages() {
+        use crate::i18n::Lang;
+        let env = DockerError::InvalidEnv("x".into());
+        assert!(env.message(Lang::En).contains("KEY=VALUE"));
+        assert!(env.message(Lang::Ja).contains("環境変数"));
+        let mount = DockerError::InvalidMount("x".into());
+        assert!(mount.message(Lang::En).contains("mount"));
+        assert!(mount.message(Lang::Ja).contains("マウント"));
     }
 
     #[test]

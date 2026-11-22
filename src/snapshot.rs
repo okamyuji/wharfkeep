@@ -57,6 +57,8 @@ pub struct ContainerRow {
     pub id: String,
     pub name: String,
     pub image: String,
+    /// イメージのID（`sha256:...`）。古い状態ファイルにはないので空のことがある。
+    pub image_id: String,
     pub state: String,
     pub status: String,
     pub ports: String,
@@ -81,6 +83,8 @@ pub struct VolumeRow {
     pub mountpoint: String,
     /// `None` は取れなかった値で、画面では「不明」と出す。
     pub size_bytes: Option<u64>,
+    /// 使われていない無名ボリューム。`docker volume prune` が消すもの。
+    pub prunable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -252,6 +256,7 @@ mod tests {
             id: format!("c{i}"),
             name: format!("web-{i}"),
             image: "nginx:latest".into(),
+            image_id: format!("sha256:{i}"),
             state: "running".into(),
             status: "Up 3 minutes".into(),
             ports: "0.0.0.0:8080->80/tcp".into(),
@@ -274,12 +279,14 @@ mod tests {
                     driver: "local".into(),
                     mountpoint: "/var/lib/docker/volumes/v1".into(),
                     size_bytes: Some(5),
+                    prunable: true,
                 },
                 VolumeRow {
                     name: "v2".into(),
                     driver: "local".into(),
                     mountpoint: "/m".into(),
                     size_bytes: None,
+                    prunable: false,
                 },
             ],
             networks: vec![NetworkRow {
