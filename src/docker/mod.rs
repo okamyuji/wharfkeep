@@ -53,6 +53,8 @@ pub enum DockerError {
     /// bollard が返した本文。表示用の文言の後ろにそのまま付ける。
     Api(String),
     InvalidPort(String),
+    /// コンテナの ID か名前が、URL の一部として安全な形ではない。
+    InvalidId(String),
 }
 
 impl DockerError {
@@ -62,6 +64,7 @@ impl DockerError {
             Self::Connect(e) => format!("{}: {e}", t(Msg::DockerConnect)),
             Self::Api(e) => format!("{}: {e}", t(Msg::DockerApi)),
             Self::InvalidPort(s) => format!("{}: {s}", t(Msg::DockerPort)),
+            Self::InvalidId(s) => format!("{}: {s:?}", t(Msg::DockerInvalidId)),
         }
     }
 }
@@ -77,6 +80,20 @@ impl std::error::Error for DockerError {}
 impl From<bollard::errors::Error> for DockerError {
     fn from(e: bollard::errors::Error) -> Self {
         Self::Api(e.to_string())
+    }
+}
+
+/// bollard は ID を `/containers/{id}/...` に埋め込むので、`/` や `?` を含む値は別の経路に当たる。
+/// 受け付ける形は moby の `daemon/names` の `RestrictedNamePattern`（`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`）と同じ。
+pub(crate) fn check_container_ref(id: &str) -> Result<(), DockerError> {
+    let mut chars = id.chars();
+    let valid = id.len() >= 2
+        && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(DockerError::InvalidId(id.to_string()))
     }
 }
 
@@ -167,6 +184,9 @@ impl Engine {
     }
 
     async fn failed_by_inspect(&self, id: &str, state: &str) -> bool {
+        if check_container_ref(id).is_err() {
+            return is_failed(state, None, "", false);
+        }
         // 消えたコンテナなど inspect に失敗したときは、失敗とは決めつけない。
         match self.docker.inspect_container(id, None).await {
             Ok(r) => {
@@ -422,5 +442,34 @@ mod tests {
             assert_ne!(e.message(Lang::En), e.message(Lang::Ja));
             assert_eq!(e.to_string(), e.message(Lang::En));
         }
+    }
+
+    #[test]
+    fn container_ref_accepts_the_names_docker_accepts() {
+        for ok in ["ab", "web-1", "my_app.v2", "0a", "A9", &"a".repeat(64)] {
+            assert_eq!(check_container_ref(ok), Ok(()), "{ok}");
+        }
+    }
+
+    #[test]
+    fn container_ref_rejects_empty_leading_symbols_and_url_syntax() {
+        for bad in [
+            "", "a", "-ab", ".ab", "_ab", "a/b", "/ab", "a?b", "a#b", "..", "a b", "a\nb", "aé",
+            "a%2f",
+        ] {
+            assert_eq!(
+                check_container_ref(bad),
+                Err(DockerError::InvalidId(bad.into())),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_id_message_is_in_both_languages() {
+        let e = DockerError::InvalidId("a/b".into());
+        assert!(e.message(Lang::En).contains("invalid container ID"));
+        assert!(e.message(Lang::Ja).contains("コンテナの ID"));
+        assert!(e.message(Lang::En).contains("\"a/b\""));
     }
 }

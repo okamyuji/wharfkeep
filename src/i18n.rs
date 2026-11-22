@@ -79,6 +79,7 @@ pub enum Msg {
     DockerConnect,
     DockerApi,
     DockerPort,
+    DockerInvalidId,
     StartInstance,
     StopInstance,
     StartAtLogin,
@@ -96,7 +97,7 @@ pub enum Msg {
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 41] = [
+    const ALL: [Msg; 42] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::Reload,
@@ -125,6 +126,7 @@ impl Msg {
         Msg::DockerConnect,
         Msg::DockerApi,
         Msg::DockerPort,
+        Msg::DockerInvalidId,
         Msg::StartInstance,
         Msg::StopInstance,
         Msg::StartAtLogin,
@@ -213,6 +215,12 @@ impl Msg {
             }
             (Msg::DockerPort, Lang::Ja) => {
                 "ポートの対応が不正です（HOST:CONTAINER か HOST:CONTAINER/udp の形で、ポートは 1〜65535）"
+            }
+            (Msg::DockerInvalidId, Lang::En) => {
+                "invalid container ID or name (use A-Z a-z 0-9 . _ - only, 2 characters or more, not starting with . or -)"
+            }
+            (Msg::DockerInvalidId, Lang::Ja) => {
+                "コンテナの ID か名前が不正です（使える文字は A-Z a-z 0-9 . _ - だけ。2 文字以上で、先頭に . と - は使えません）"
             }
             (Msg::StartInstance, Lang::En) => "Start {name}",
             (Msg::StartInstance, Lang::Ja) => "{name} を起動",

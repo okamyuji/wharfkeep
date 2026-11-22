@@ -6,7 +6,7 @@ mod resources;
 pub use images::PullProgress;
 pub use resources::NetDriver;
 
-use super::{DockerError, Engine, size_to_option};
+use super::{DockerError, Engine, check_container_ref, size_to_option};
 use bollard::models::{
     ContainerCpuStats, ContainerCreateBody, HostConfig, PortBinding,
     RestartPolicy as BollardRestartPolicy, RestartPolicyNameEnum,
@@ -16,6 +16,7 @@ use bollard::query_parameters::{
     RemoveContainerOptionsBuilder, RenameContainerOptionsBuilder, RestartContainerOptions,
     StartContainerOptions, StatsOptionsBuilder, StopContainerOptions,
 };
+use futures_util::future::Either;
 use futures_util::{Stream, StreamExt};
 use std::collections::HashMap;
 
@@ -201,6 +202,7 @@ pub(super) fn filter(
 
 impl Engine {
     pub async fn start(&self, id: &str) -> Result<(), DockerError> {
+        check_container_ref(id)?;
         Ok(self
             .docker
             .start_container(id, None::<StartContainerOptions>)
@@ -208,6 +210,7 @@ impl Engine {
     }
 
     pub async fn stop(&self, id: &str) -> Result<(), DockerError> {
+        check_container_ref(id)?;
         Ok(self
             .docker
             .stop_container(id, None::<StopContainerOptions>)
@@ -215,6 +218,7 @@ impl Engine {
     }
 
     pub async fn restart(&self, id: &str) -> Result<(), DockerError> {
+        check_container_ref(id)?;
         Ok(self
             .docker
             .restart_container(id, None::<RestartContainerOptions>)
@@ -222,24 +226,30 @@ impl Engine {
     }
 
     pub async fn pause(&self, id: &str) -> Result<(), DockerError> {
+        check_container_ref(id)?;
         Ok(self.docker.pause_container(id).await?)
     }
 
     pub async fn unpause(&self, id: &str) -> Result<(), DockerError> {
+        check_container_ref(id)?;
         Ok(self.docker.unpause_container(id).await?)
     }
 
     pub async fn rename(&self, id: &str, new: &str) -> Result<(), DockerError> {
+        check_container_ref(id)?;
+        check_container_ref(new)?;
         let opts = RenameContainerOptionsBuilder::new().name(new).build();
         Ok(self.docker.rename_container(id, opts).await?)
     }
 
     pub async fn remove(&self, id: &str, force: bool) -> Result<(), DockerError> {
+        check_container_ref(id)?;
         let opts = RemoveContainerOptionsBuilder::new().force(force).build();
         Ok(self.docker.remove_container(id, Some(opts)).await?)
     }
 
     pub async fn inspect(&self, id: &str) -> Result<serde_json::Value, DockerError> {
+        check_container_ref(id)?;
         let r = self
             .docker
             .inspect_container(id, None::<InspectContainerOptions>)
@@ -249,6 +259,7 @@ impl Engine {
 
     /// 1 回分の CPU とメモリ。stream=false の応答には、直前の標本（precpu）が入っている。
     pub async fn stats_once(&self, id: &str) -> Result<Usage, DockerError> {
+        check_container_ref(id)?;
         let opts = StatsOptionsBuilder::new()
             .stream(false)
             .one_shot(false)
@@ -284,12 +295,17 @@ impl Engine {
         id: &str,
         follow: bool,
     ) -> impl Stream<Item = Result<String, DockerError>> + '_ {
+        if let Err(e) = check_container_ref(id) {
+            return Either::Left(futures_util::stream::once(std::future::ready(Err(e))));
+        }
         let opts = LogsOptionsBuilder::new()
             .stdout(true)
             .stderr(true)
             .follow(follow)
             .build();
-        super::logs::split_log_stream(Box::pin(self.docker.logs(id, Some(opts))))
+        Either::Right(super::logs::split_log_stream(Box::pin(
+            self.docker.logs(id, Some(opts)),
+        )))
     }
 
     /// 作って開始する。開始に失敗したら作ったコンテナを消し、開始の失敗を返す。
@@ -501,5 +517,67 @@ mod tests {
         };
         assert_eq!(cpu_sample(&s), sample(7, 9, 3));
         assert_eq!(cpu_sample(&ContainerCpuStats::default()), sample(0, 0, 1));
+    }
+
+    /// 接続を数えるだけの偽 UNIX ソケット。不正な ID が bollard に渡らなければ 0 のまま。
+    fn counting_engine(
+        dir: &std::path::Path,
+    ) -> (Engine, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let sock = dir.join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        tokio::spawn(async move {
+            while let Ok((conn, _)) = listener.accept().await {
+                seen.fetch_add(1, Ordering::SeqCst);
+                drop(conn);
+            }
+        });
+        (Engine::connect(&sock).unwrap(), count)
+    }
+
+    #[tokio::test]
+    async fn every_operation_rejects_a_bad_id_without_calling_docker() {
+        use futures_util::StreamExt;
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (e, count) = counting_engine(dir.path());
+        let bad = "../images/json?x=1#";
+        let want = DockerError::InvalidId(bad.into());
+        assert_eq!(e.start(bad).await, Err(want.clone()));
+        assert_eq!(e.stop(bad).await, Err(want.clone()));
+        assert_eq!(e.restart(bad).await, Err(want.clone()));
+        assert_eq!(e.pause(bad).await, Err(want.clone()));
+        assert_eq!(e.unpause(bad).await, Err(want.clone()));
+        assert_eq!(e.rename(bad, "ok-name").await, Err(want.clone()));
+        assert_eq!(e.remove(bad, true).await, Err(want.clone()));
+        assert_eq!(e.inspect(bad).await, Err(want.clone()));
+        assert_eq!(e.stats_once(bad).await.map(|_| ()), Err(want.clone()));
+        let first = std::pin::pin!(e.logs(bad, false)).next().await.unwrap();
+        assert_eq!(first, Err(want.clone()));
+        assert!(!e.failed_by_inspect(bad, "exited").await);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn rename_rejects_a_bad_new_name_without_calling_docker() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (e, count) = counting_engine(dir.path());
+        assert_eq!(
+            e.rename("web-1", "a/b").await,
+            Err(DockerError::InvalidId("a/b".into()))
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_valid_id_reaches_docker() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (e, count) = counting_engine(dir.path());
+        assert!(matches!(e.start("web-1").await, Err(DockerError::Api(_))));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }
