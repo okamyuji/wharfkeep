@@ -2,6 +2,7 @@
 
 pub mod actions;
 mod df;
+mod logs;
 
 use crate::i18n::{Lang, Msg};
 use crate::snapshot::{ContainerRow, DockerSummary, ImageRow, NetworkRow, VolumeRow};

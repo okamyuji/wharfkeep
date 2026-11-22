@@ -167,13 +167,6 @@ fn create_body(spec: &RunSpec) -> ContainerCreateBody {
     }
 }
 
-fn split_lines(bytes: &[u8]) -> Vec<String> {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .map(str::to_string)
-        .collect()
-}
-
 /// `docker stats` と同じく、回収できるページキャッシュを使用量から引く。
 fn mem_used(usage: u64, inactive_file: u64) -> u64 {
     usage.saturating_sub(inactive_file)
@@ -296,13 +289,7 @@ impl Engine {
             .stderr(true)
             .follow(follow)
             .build();
-        self.docker.logs(id, Some(opts)).flat_map(|r| {
-            let lines: Vec<_> = match r {
-                Ok(out) => split_lines(&out.into_bytes()).into_iter().map(Ok).collect(),
-                Err(e) => vec![Err(DockerError::from(e))],
-            };
-            futures_util::stream::iter(lines)
-        })
+        super::logs::split_log_stream(Box::pin(self.docker.logs(id, Some(opts))))
     }
 
     /// 作って開始する。開始に失敗したら作ったコンテナを消し、開始の失敗を返す。
@@ -473,14 +460,6 @@ mod tests {
             let rp = create_body(&s).host_config.unwrap().restart_policy.unwrap();
             assert_eq!(rp.name, Some(e));
         }
-    }
-
-    #[test]
-    fn split_lines_handles_crlf_and_blank_and_binary() {
-        assert_eq!(split_lines(b"a\nb\r\n\nc"), ["a", "b", "", "c"]);
-        assert_eq!(split_lines(b"a\n"), ["a"]);
-        assert!(split_lines(b"").is_empty());
-        assert_eq!(split_lines(b"\xff\n"), ["\u{fffd}"]);
     }
 
     #[test]
