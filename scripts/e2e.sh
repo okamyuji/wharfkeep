@@ -135,6 +135,10 @@ choose_menu_item() {
   if [ "$item" = last ]; then
     ax "$pid" "click last menu item of menu 1 of menu bar item 1 of menu bar 2" >/dev/null ||
       fail "メニューの最後の項目を押せません"
+  elif [ "$item" = login ]; then
+    # 「ログイン時に起動」は終了の1つ前。言語によらず位置で選ぶ。
+    ax "$pid" "click menu item -2 of menu 1 of menu bar item 1 of menu bar 2" >/dev/null ||
+      fail "メニューの「ログイン時に起動」を押せません"
   else
     ax "$pid" "click menu item \"$item\" of menu 1 of menu bar item 1 of menu bar 2" >/dev/null ||
       fail "メニューの「${item}」を押せません"
@@ -276,6 +280,38 @@ fi
 printed=$(launchctl print "$service")
 grep -q 'last exit code = 0' <<<"$printed" || fail "終了コードが0ではありません"
 echo "(autostart-4) 終了の後、15秒待っても起動し直さない（last exit code = 0）"
+
+# (5) 自動起動をオフにすると、launchdはplistを消したあとデーモンを起こし直さない。動いているデーモンはそのまま動く。
+launchctl kickstart "$service"
+wait_until 10 launchd_runs || fail "launchdからデーモンを起動できません"
+opid=$(launchd_pid)
+wait_until 10 status_item_visible "$opid" || fail "launchdのデーモンのメニューバー項目がAXに見えません"
+choose_menu_item "$opid" login "autostart-5-menu-off"
+wait_until 10 test ! -e "$plist" || fail "オフにしてもplistが消えません"
+[ "$(daemon_pids)" = "$opid" ] || fail "オフにしたらデーモンが止まりました"
+wait_until 5 status_item_visible "$opid" || fail "オフにしたあとメニューバー項目が消えました"
+echo "(autostart-5) オフにするとplistが消え、デーモン pid=$opid とメニューバーは残った"
+kill -9 "$opid"
+wait_until 10 daemons_are 0 || fail "kill -9 のあとデーモンが残っています"
+if wait_until 15 daemons_are 1; then
+  fail "オフにしたのにkill -9 のあと起こし直されました"
+fi
+if launchctl print "$service" >/dev/null 2>&1; then
+  fail "オフにしたのにlaunchdにジョブが残っています"
+fi
+echo "(autostart-6) オフのあと kill -9 しても15秒間起こし直されず、launchdからジョブが外れた"
+
+# (7) オンに戻す。launchdの外で起動したデーモンのメニューから選ぶと、plistが書かれlaunchdに読み込まれる。
+WHARFKEEP_LANG=en "$exe" daemon >/dev/null 2>&1 &
+wait_until 10 daemons_are 1 || fail "デーモンが起動しません"
+mpid=$(daemon_pids)
+wait_until 10 status_item_visible "$mpid" || fail "メニューバー項目がAXに見えません"
+choose_menu_item "$mpid" login "autostart-7-menu-on"
+wait_until 10 launchctl print "$service" >/dev/null 2>&1 || fail "オンに戻してもlaunchdに登録されません"
+[ -e "$plist" ] || fail "オンに戻してもplistがありません"
+echo "(autostart-7) オンに戻すとplistが書かれ、launchdに登録された"
+choose_menu_item "$mpid" last "autostart-7-menu-quit"
+wait_until 10 daemons_are 0 || fail "終了でデーモンが終わりません（オンに戻したあと）"
 
 # 日本語の文言が描けることを確かめる。メニューバーの流れは上で確かめたのでGUIだけを開く。
 echo "== ja"
