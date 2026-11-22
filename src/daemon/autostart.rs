@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -115,24 +116,59 @@ fn xml_escape(s: &str) -> String {
         })
 }
 
-/// `on`なら`exe`でplistを書き直し、launchdに読み込まれていなければ読み込ませる。`on`でなければplistを消す。
-/// 消すときにlaunchdから外さないのは、launchdが起動したデーモン自身が外すと自分が止まるため。
+const LAUNCHCTL: &str = "/bin/launchctl";
+
+/// `on`なら`exe`でplistを書き直し、launchdに読み込まれていなければ読み込ませる。`on`でなければplistを消し、
+/// デーモンが終わったあとでlaunchdから外す。
 pub fn apply(exe: &Path, on: bool) -> Result<(), String> {
+    apply_with(Path::new(LAUNCHCTL), exe, on)
+}
+
+fn apply_with(launchctl: &Path, exe: &Path, on: bool) -> Result<(), String> {
     let a = Autostart::new(exe)?;
     if !on {
-        return a.disable();
+        a.disable()?;
+        return unload_when_daemon_exits(launchctl, std::process::id(), a.plist_path());
     }
     a.enable()?;
-    load_into_launchd(a.plist_path())
+    load_into_launchd(launchctl, a.plist_path())
+}
+
+fn service_target() -> String {
+    // SAFETY: getuidは失敗せず、メモリにも触れない。
+    format!("gui/{}/{APP_NAME}", unsafe { libc::getuid() })
+}
+
+/// 読み込み済みのジョブは、plistを消してもlaunchdに残る。残ると`kill -9`などで落ちたデーモンを起こし直す。
+/// 今のデーモンを止めずに外すため、`pid`の終わりを待って`bootout`する別プロセスを置く。
+/// 別のプロセスグループに置くのは、launchdがジョブの終了時にグループごと片付けるため。
+/// 待つ間に自動起動が有効へ戻された（plistがある）なら外さない。
+fn unload_when_daemon_exits(launchctl: &Path, pid: u32, plist: &Path) -> Result<(), String> {
+    const WATCH: &str = r#"while kill -0 "$1" 2>/dev/null; do sleep 1; done; [ -e "$2" ] || exec "$4" bootout "$3""#;
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", WATCH, "wharfkeep-unload"])
+        .arg(pid.to_string())
+        .arg(plist)
+        .arg(service_target())
+        .arg(launchctl)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    // 終わった子がデーモンの終了までゾンビで残らないよう回収する。
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 /// plistを書いただけでは次のログインまで読み込まれない。今すぐ登録済みにする。
 /// 読み込むとlaunchdがもう1つデーモンを起こすが、ロックを取れずに0で終わり、起こし直されない。
-fn load_into_launchd(plist: &Path) -> Result<(), String> {
+fn load_into_launchd(launchctl: &Path, plist: &Path) -> Result<(), String> {
     // SAFETY: getuidは失敗せず、メモリにも触れない。
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     let launchctl = |args: &[&std::ffi::OsStr]| {
-        Command::new("/bin/launchctl")
+        Command::new(launchctl)
             .args(args)
             .stdin(Stdio::null())
             .output()
@@ -290,16 +326,10 @@ mod tests {
     }
 
     /// 登録先はホームから決まる。環境変数の書き換えはプロセス全体に効き並列の試験と衝突するため、子プロセスで`HOME`を差し替える。
-    #[test]
-    fn plist_has_keepalive_and_daemon_arg() {
+    fn run_child(test: &str) {
         let home = tempfile::tempdir().unwrap();
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "daemon::autostart::tests::child_enable_disable",
-                "--ignored",
-                "--nocapture",
-            ])
+            .args(["--exact", test, "--ignored", "--nocapture"])
             .env("WHARFKEEP_AUTOSTART_CHILD", home.path())
             .env("HOME", home.path())
             .output()
@@ -310,5 +340,111 @@ mod tests {
             "{stdout}{}",
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    #[test]
+    fn plist_has_keepalive_and_daemon_arg() {
+        run_child("daemon::autostart::tests::child_enable_disable");
+    }
+
+    #[test]
+    fn apply_toggles_plist_and_talks_to_launchctl() {
+        run_child("daemon::autostart::tests::child_apply");
+    }
+
+    /// 引数を`log`に追記し、`print`だけ失敗する偽の launchctl。
+    fn fake_launchctl(dir: &Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("launchctl");
+        let log = dir.join("calls.log");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> '{}'\n[ \"$1\" = print ] && exit 1\nexit 0\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (bin, log)
+    }
+
+    fn calls(log: &Path) -> String {
+        std::fs::read_to_string(log).unwrap_or_default()
+    }
+
+    /// 子プロセスの中で`apply_with`を呼ぶ。偽の launchctl を使うので、利用者の登録には触れない。
+    #[test]
+    #[ignore = "apply_toggles_plist_and_talks_to_launchctl から子プロセスとして呼ぶ"]
+    fn child_apply() {
+        let Some(home) = std::env::var_os("WHARFKEEP_AUTOSTART_CHILD") else {
+            return;
+        };
+        let home = PathBuf::from(home);
+        assert_eq!(
+            std::env::var_os("HOME"),
+            Some(home.clone().into_os_string())
+        );
+        let (bin, log) = fake_launchctl(&home);
+        let exe = home.join("wharfkeep");
+        std::fs::write(&exe, "").unwrap();
+        let plist = home.join("Library/LaunchAgents/wharfkeep.plist");
+
+        apply_with(&bin, &exe, true).unwrap();
+        assert!(plist.exists());
+        let c = calls(&log);
+        assert!(c.contains("print gui/"), "{c}");
+        assert!(c.contains("bootstrap gui/"), "{c}");
+        assert!(c.contains(plist.to_str().unwrap()), "{c}");
+
+        // 消すだけで、その場では launchctl を呼ばない。デーモンはこのまま動き続ける。
+        let before = calls(&log);
+        apply_with(&bin, &exe, false).unwrap();
+        assert!(!plist.exists());
+        assert_eq!(calls(&log), before);
+    }
+
+    fn uid() -> u32 {
+        // SAFETY: getuidは失敗せず、メモリにも触れない。
+        unsafe { libc::getuid() }
+    }
+
+    fn wait_for(log: &Path, needle: &str) -> bool {
+        for _ in 0..60 {
+            if calls(log).contains(needle) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    }
+
+    #[test]
+    fn launchd_job_is_removed_after_the_daemon_dies_without_a_plist() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, log) = fake_launchctl(dir.path());
+        let mut daemon = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        unload_when_daemon_exits(&bin, daemon.id(), &dir.path().join("none.plist")).unwrap();
+        // デーモンが生きている間は外さない。
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(calls(&log), "");
+        daemon.kill().unwrap();
+        daemon.wait().unwrap();
+        let want = format!("bootout gui/{}/wharfkeep", uid());
+        assert!(wait_for(&log, &want), "{}", calls(&log));
+    }
+
+    #[test]
+    fn launchd_job_stays_when_autostart_was_turned_back_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, log) = fake_launchctl(dir.path());
+        let plist = dir.path().join("wharfkeep.plist");
+        std::fs::write(&plist, "").unwrap();
+        let mut daemon = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        unload_when_daemon_exits(&bin, daemon.id(), &plist).unwrap();
+        daemon.kill().unwrap();
+        daemon.wait().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        assert_eq!(calls(&log), "");
     }
 }
