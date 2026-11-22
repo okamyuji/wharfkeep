@@ -815,29 +815,35 @@ esac"#
     async fn capture_kills_a_hung_colima_after_the_limit() {
         let d = tempfile::tempdir().unwrap();
         let pid_file = d.path().join("pid");
+        // mv で pid を一度に見せる。リダイレクトだけだと、空の pid ファイルを読む瞬間がある。
         let c = fake(
             &d,
-            &format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+            &format!(
+                "echo $$ > '{f}.tmp' && mv '{f}.tmp' '{f}'; exec sleep 30",
+                f = pid_file.display()
+            ),
         );
         let started = std::time::Instant::now();
+        // 制限は、負荷でシェルの起動が遅れても pid を書き終える長さにする。
         let r = c
-            .capture_within(&[], std::time::Duration::from_millis(500))
+            .capture_within(&[], std::time::Duration::from_secs(2))
             .await;
         assert_eq!(r, Err(ColimaError::Timeout));
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        // 負荷でシェルの起動が遅いと、pid を書く前に kill される。kill しない実装なら 2 秒以内に必ず書く。
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
         let mut pid = None;
         for _ in 0..40 {
-            if let Ok(p) = std::fs::read_to_string(&pid_file) {
-                pid = Some(p);
+            if let Ok(p) = std::fs::read_to_string(&pid_file)
+                && let Ok(n) = p.trim().parse::<u32>()
+            {
+                pid = Some(n.to_string());
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        let Some(pid) = pid else { return };
+        let pid = pid.expect("the fake colima never wrote its pid");
         let alive = || {
             std::process::Command::new("kill")
-                .args(["-0", pid.trim()])
+                .args(["-0", &pid])
                 .output()
                 .unwrap()
                 .status
