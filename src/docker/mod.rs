@@ -14,7 +14,7 @@ use bollard::query_parameters::{
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::{Stream, StreamExt};
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const REQUEST_TIMEOUT_SECS: u64 = 120;
 
@@ -55,7 +55,6 @@ impl From<bollard::errors::Error> for DockerError {
 #[derive(Clone)]
 pub struct Engine {
     pub(crate) docker: Docker,
-    socket: PathBuf,
 }
 
 impl Engine {
@@ -65,10 +64,7 @@ impl Engine {
             .ok_or_else(|| DockerError::Connect(socket.display().to_string()))?;
         let docker = Docker::connect_with_unix(path, REQUEST_TIMEOUT_SECS, API_DEFAULT_VERSION)
             .map_err(|e| DockerError::Connect(e.to_string()))?;
-        Ok(Engine {
-            docker,
-            socket: socket.to_path_buf(),
-        })
+        Ok(Engine { docker })
     }
 
     pub async fn summary(&self) -> Result<DockerSummary, DockerError> {
@@ -78,8 +74,8 @@ impl Engine {
             self.docker.list_images(None::<ListImagesOptions>),
             self.docker.list_volumes(None::<ListVolumesOptions>),
             self.docker.list_networks(None::<ListNetworksOptions>),
-            // df が取れなくても一覧は出す。サイズだけ不明にする。
-            df::fetch(&self.socket),
+            // df が取れなくても（遅くて打ち切った場合も）一覧は出す。サイズだけ不明にする。
+            df::fetch(&self.docker, df::DF_TIMEOUT),
         );
         let (disk, volume_sizes) = df.unwrap_or_default();
         Ok(DockerSummary {

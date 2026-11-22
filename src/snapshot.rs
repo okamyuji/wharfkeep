@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 /// これより古い状態は、デーモンが止まっているとみなす。
-const STALE_AFTER: Duration = Duration::from_secs(15);
+pub(crate) const STALE_AFTER: Duration = Duration::from_secs(15);
 
 /// これを超える状態ファイルは読まない。実際の状態は数百 KiB までなので十分に大きい。
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;

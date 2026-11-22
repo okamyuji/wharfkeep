@@ -14,7 +14,7 @@ libc = "0.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sys-locale = "0.3"
-tokio = { version = "1.54.1", features = ["process", "io-util", "sync", "rt", "macros", "net", "time"] }
+tokio = { version = "1.54.1", features = ["process", "io-util", "sync", "rt", "macros", "time"] }
 winit = "0.30"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSObject"] }
@@ -22,3 +22,4 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1.54.1", features = ["net"] }
