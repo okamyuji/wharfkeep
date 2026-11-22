@@ -140,9 +140,11 @@ impl Msg {
             (Msg::ColimaParse, Lang::Ja) => "colima の出力を読めません（行）",
             (Msg::ColimaSocket, Lang::En) => "unexpected docker socket address",
             (Msg::ColimaSocket, Lang::Ja) => "docker のソケットのアドレスが想定外です",
-            (Msg::ColimaProfile, Lang::En) => "invalid profile name (use A-Z a-z 0-9 . _ - only)",
+            (Msg::ColimaProfile, Lang::En) => {
+                "invalid profile name (use A-Z a-z 0-9 . _ - only, not starting with -)"
+            }
             (Msg::ColimaProfile, Lang::Ja) => {
-                "プロフィール名が不正です（使える文字は A-Z a-z 0-9 . _ - だけ）"
+                "プロフィール名が不正です（使える文字は A-Z a-z 0-9 . _ - だけ。先頭に - は使えません）"
             }
             (Msg::ColimaCpus, Lang::En) => "CPU count must be 1 or more",
             (Msg::ColimaCpus, Lang::Ja) => "CPU 数は 1 以上にしてください",

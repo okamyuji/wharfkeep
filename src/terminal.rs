@@ -105,18 +105,32 @@ fn write_script_in(dir: &Path, argv: &[String], env: &[(String, String)]) -> io:
     Ok(path)
 }
 
-/// `.command`を書いて`open`する。`.command`に関連付けられたアプリ（既定はTerminal.app）が実行する。
-pub fn open_in_terminal(argv: &[String], env: &[(String, String)]) -> io::Result<()> {
-    let dir = crate::paths::data_dir()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory is unknown"))?
-        .join("terminal");
-    let path = write_script_in(&dir, argv, env)?;
-    let status = Command::new("open").arg(&path).status()?;
+fn terminal_dir(data_dir: Option<PathBuf>) -> io::Result<PathBuf> {
+    data_dir
+        .map(|d| d.join("terminal"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory is unknown"))
+}
+
+/// opener は試験で差し替えるために引数にしている。
+fn open_with(
+    opener: &Path,
+    dir: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+) -> io::Result<()> {
+    let path = write_script_in(dir, argv, env)?;
+    let status = Command::new(opener).arg(&path).status()?;
     if status.success() {
         Ok(())
     } else {
         Err(io::Error::other(format!("open exited with {status}")))
     }
+}
+
+/// `.command`を書いて`open`する。`.command`に関連付けられたアプリ（既定はTerminal.app）が実行する。
+pub fn open_in_terminal(argv: &[String], env: &[(String, String)]) -> io::Result<()> {
+    let dir = terminal_dir(crate::paths::data_dir())?;
+    open_with(Path::new("/usr/bin/open"), &dir, argv, env)
 }
 
 #[cfg(test)]
@@ -266,6 +280,55 @@ mod tests {
             .set_modified(SystemTime::now() - Duration::from_secs(48 * 3600))
             .unwrap();
         assert!(write_script_in(dir.path(), &s(&["true"]), &[]).is_ok());
+    }
+
+    fn fake_opener(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let p = dir.join(name);
+        fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o700)).unwrap();
+        p
+    }
+
+    #[test]
+    fn open_with_passes_generated_command_path_to_opener() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("arg.txt");
+        let opener = fake_opener(
+            dir.path(),
+            "ok.sh",
+            &format!("printf '%s' \"$1\" > '{}'", record.display()),
+        );
+        let target = dir.path().join("terminal");
+        open_with(&opener, &target, &s(&["true"]), &[]).unwrap();
+        let arg = PathBuf::from(fs::read_to_string(&record).unwrap());
+        assert_eq!(arg.parent().unwrap(), target);
+        assert_eq!(arg.extension().unwrap(), "command");
+        assert!(arg.exists());
+    }
+
+    #[test]
+    fn open_with_fails_when_opener_exits_nonzero() {
+        let dir = tempfile::tempdir().unwrap();
+        let opener = fake_opener(dir.path(), "ng.sh", "exit 1");
+        let err = open_with(&opener, &dir.path().join("t"), &s(&["true"]), &[]).unwrap_err();
+        assert!(err.to_string().contains("exited"), "{err}");
+    }
+
+    #[test]
+    fn open_with_fails_when_opener_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("none");
+        assert!(open_with(&missing, &dir.path().join("t"), &s(&["true"]), &[]).is_err());
+    }
+
+    #[test]
+    fn terminal_dir_maps_missing_data_dir_to_not_found() {
+        let err = terminal_dir(None).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            terminal_dir(Some(PathBuf::from("/x"))).unwrap(),
+            PathBuf::from("/x/terminal")
+        );
     }
 
     #[test]

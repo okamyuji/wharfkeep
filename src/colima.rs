@@ -158,8 +158,10 @@ pub enum Action {
 }
 
 /// プロフィール名は colima のデータ置き場のパス部品になるので、`.` と `..` も断る。
+/// 先頭の `-` は colima がオプションとして解釈する（`-h`、`--force`）ので断る。
 fn check_profile(p: &str) -> Result<(), ColimaError> {
     let ok = !p.is_empty()
+        && !p.starts_with('-')
         && p.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
         && !p.chars().all(|c| c == '.');
@@ -465,7 +467,9 @@ mod tests {
 
     #[test]
     fn start_args_rejects_empty_or_invalid_profile() {
-        for p in ["", "a b", "../x", ".", "..", "a/b", "日本"] {
+        for p in [
+            "", "a b", "../x", ".", "..", "a/b", "日本", "-h", "--force", "-",
+        ] {
             let s = CreateSpec {
                 profile: p.into(),
                 ..spec()
@@ -475,7 +479,7 @@ mod tests {
                 "{p:?}"
             );
         }
-        for p in ["a", "A-z_0.9", "..a", "a.."] {
+        for p in ["a", "A-z_0.9", "..a", "a..", "a-b"] {
             let s = CreateSpec {
                 profile: p.into(),
                 ..spec()

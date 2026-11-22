@@ -1,0 +1,2 @@
+# open_in_terminal は固定パスの配線だけで、実ターミナルを開く ignore 付き試験でしか確かめられない。
+exclude_re = ["replace open_in_terminal -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)"]

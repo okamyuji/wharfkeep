@@ -2,3 +2,5 @@
 .superpowers/
 docs/superpowers/
 .DS_Store
+mutants.out/
+mutants.out.old/

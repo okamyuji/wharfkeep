@@ -45,7 +45,8 @@ pub struct DockerSummary {
     pub disk: DiskUsage,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ContainerRow {
     pub id: String,
     pub name: String,
@@ -57,7 +58,8 @@ pub struct ContainerRow {
     pub failed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ImageRow {
     pub id: String,
     pub repo_tags: Vec<String>,
@@ -65,7 +67,8 @@ pub struct ImageRow {
     pub created: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VolumeRow {
     pub name: String,
     pub driver: String,
@@ -74,7 +77,8 @@ pub struct VolumeRow {
     pub size_bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NetworkRow {
     pub id: String,
     pub name: String,
@@ -84,6 +88,7 @@ pub struct NetworkRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DiskUsage {
     pub images: Option<u64>,
     pub containers: Option<u64>,
@@ -370,6 +375,21 @@ mod tests {
         assert!(!is_stale(t, &s));
         assert!(!is_stale(t + Duration::from_secs(15), &s));
         assert!(is_stale(t + Duration::from_millis(15_001), &s));
+    }
+
+    #[test]
+    fn older_snapshot_with_fewer_row_fields_still_parses() {
+        let mut v = serde_json::to_value(sample(0)).unwrap();
+        v["docker"] = serde_json::json!({"p": {"Ready": {"containers": [
+            {"id": "c1", "name": "n", "image": "i", "state": "running", "status": "Up"}
+        ]}}});
+        let s: Snapshot = serde_json::from_value(v).unwrap();
+        let DockerState::Ready(d) = &s.docker["p"] else {
+            panic!("not ready")
+        };
+        let c = &d.containers[0];
+        assert!(!c.failed);
+        assert_eq!(c.ports, "");
     }
 
     #[test]
