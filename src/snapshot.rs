@@ -4,7 +4,7 @@ use crate::colima::Instance;
 use crate::i18n::{Lang, Msg};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +12,12 @@ use std::time::{Duration, SystemTime};
 
 /// これより古い状態は、デーモンが止まっているとみなす。
 const STALE_AFTER: Duration = Duration::from_secs(15);
+
+/// これを超える状態ファイルは読まない。実際の状態は数百 KiB までなので十分に大きい。
+const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
+
+/// 書き込み中に SIGKILL された一時ファイルを、書き込み中のものと見分ける猶予。
+const TEMP_STALE_AFTER: Duration = Duration::from_secs(60);
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -106,6 +112,9 @@ pub enum SnapshotError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    TooLarge {
+        path: PathBuf,
+    },
 }
 
 impl SnapshotError {
@@ -117,6 +126,9 @@ impl SnapshotError {
                     Msg::SnapshotIo.text(lang),
                     path.display()
                 )
+            }
+            Self::TooLarge { path } => {
+                format!("{}: {}", Msg::SnapshotTooLarge.text(lang), path.display())
             }
             Self::Parse { path, source } => {
                 format!(
@@ -155,18 +167,54 @@ fn write_synced(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
     f.sync_all()
 }
 
-/// ファイルがなければ `Ok(None)`。
-pub fn read(path: &Path) -> Result<Option<Snapshot>, SnapshotError> {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => {
-            return Err(SnapshotError::Io {
-                path: path.to_path_buf(),
-                source,
-            });
+/// SIGKILL で残った `state.json.*.tmp` のうち、`TEMP_STALE_AFTER` より古いものを消す。
+/// 消した数を返す。1件を消せなくても続ける。デーモンの起動時に呼ぶ。
+pub fn remove_stale_temps(dir: &Path) -> io::Result<usize> {
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("state.json.") && name.ends_with(".tmp")) {
+            continue;
         }
+        let age = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| now.duration_since(m).ok());
+        if age.is_some_and(|a| a > TEMP_STALE_AFTER) && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// ファイルがなければ `Ok(None)`。`MAX_READ_BYTES` を超えるファイルは読まない。
+pub fn read(path: &Path) -> Result<Option<Snapshot>, SnapshotError> {
+    let io_err = |source| SnapshotError::Io {
+        path: path.to_path_buf(),
+        source,
     };
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(e)),
+    };
+    let too_large = || SnapshotError::TooLarge {
+        path: path.to_path_buf(),
+    };
+    if file.metadata().map_err(io_err)?.len() > MAX_READ_BYTES {
+        return Err(too_large());
+    }
+    // 長さを測ったあとに伸びるファイルや、長さ 0 と報告されるファイルがあるので、読む量も縛る。
+    let mut bytes = Vec::new();
+    file.take(MAX_READ_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_err)?;
+    if bytes.len() as u64 > MAX_READ_BYTES {
+        return Err(too_large());
+    }
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|source| SnapshotError::Parse {
@@ -417,5 +465,78 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn read_refuses_files_over_16_mib_without_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, vec![b' '; MAX_READ_BYTES as usize + 1]).unwrap();
+        let err = read(&path).unwrap_err();
+        assert!(matches!(err, SnapshotError::TooLarge { .. }), "{err:?}");
+        for lang in [Lang::En, Lang::Ja] {
+            assert!(err.message(lang).contains("state.json"));
+        }
+        assert_ne!(err.message(Lang::En), err.message(Lang::Ja));
+    }
+
+    #[test]
+    fn read_accepts_a_file_of_exactly_16_mib() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let json = serde_json::to_vec(&sample(1)).unwrap();
+        let mut bytes = json.clone();
+        bytes.resize(MAX_READ_BYTES as usize, b' ');
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(read(&path).unwrap(), Some(sample(1)));
+    }
+
+    #[test]
+    fn read_caps_a_file_that_grows_after_the_size_check() {
+        // /dev/zero は長さ 0 と報告されるが、無限に読める。take の上限が効くか確かめる。
+        let err = read(Path::new("/dev/zero")).unwrap_err();
+        assert!(matches!(err, SnapshotError::TooLarge { .. }), "{err:?}");
+    }
+
+    fn touch_aged(dir: &Path, name: &str, age: Duration) -> PathBuf {
+        let p = dir.join(name);
+        let f = std::fs::File::create(&p).unwrap();
+        f.set_modified(SystemTime::now() - age).unwrap();
+        p
+    }
+
+    #[test]
+    fn remove_stale_temps_removes_only_old_state_json_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let secs = Duration::from_secs;
+        let old = touch_aged(dir.path(), "state.json.123.4.tmp", secs(120));
+        let fresh = touch_aged(dir.path(), "state.json.123.5.tmp", secs(5));
+        let edge = touch_aged(dir.path(), "state.json.123.6.tmp", secs(55));
+        let real = touch_aged(dir.path(), "state.json", secs(600));
+        let other = touch_aged(dir.path(), "other.json.1.2.tmp", secs(600));
+        let nontmp = touch_aged(dir.path(), "state.json.1.2.bak", secs(600));
+        assert_eq!(remove_stale_temps(dir.path()).unwrap(), 1);
+        assert!(!old.exists());
+        for p in [fresh, edge, real, other, nontmp] {
+            assert!(p.exists(), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn remove_stale_temps_on_missing_dir_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(remove_stale_temps(&dir.path().join("none")).is_err());
+    }
+
+    #[test]
+    fn remove_stale_temps_ignores_entries_it_cannot_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        let stuck = dir.path().join("state.json.1.2.tmp");
+        std::fs::create_dir(&stuck).unwrap();
+        std::fs::File::open(&stuck)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(600))
+            .unwrap();
+        assert_eq!(remove_stale_temps(dir.path()).unwrap(), 0);
     }
 }

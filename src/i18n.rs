@@ -74,6 +74,7 @@ pub enum Msg {
     ColimaOutputTooLarge,
     SnapshotIo,
     SnapshotParse,
+    SnapshotTooLarge,
     DockerConnect,
     DockerApi,
     DockerPort,
@@ -81,7 +82,7 @@ pub enum Msg {
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 26] = [
+    const ALL: [Msg; 27] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::Reload,
@@ -105,6 +106,7 @@ impl Msg {
         Msg::ColimaOutputTooLarge,
         Msg::SnapshotIo,
         Msg::SnapshotParse,
+        Msg::SnapshotTooLarge,
         Msg::DockerConnect,
         Msg::DockerApi,
         Msg::DockerPort,
@@ -170,6 +172,8 @@ impl Msg {
             (Msg::SnapshotIo, Lang::Ja) => "状態ファイルを読めません",
             (Msg::SnapshotParse, Lang::En) => "the state file is not valid",
             (Msg::SnapshotParse, Lang::Ja) => "状態ファイルの形が不正です",
+            (Msg::SnapshotTooLarge, Lang::En) => "the state file is too large (over 16 MiB)",
+            (Msg::SnapshotTooLarge, Lang::Ja) => "状態ファイルが大きすぎます（16 MiB 超）",
             (Msg::DockerConnect, Lang::En) => "cannot connect to the docker socket",
             (Msg::DockerConnect, Lang::Ja) => "docker のソケットに接続できません",
             (Msg::DockerApi, Lang::En) => "docker returned an error",
