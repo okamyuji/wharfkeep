@@ -4,11 +4,16 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
-description = "colimaとDockerをメニューバーとウィンドウから扱うmacOSアプリ"
+description = "macOS menu bar app for watching and controlling Colima and Docker containers"
+repository = "https://github.com/okamyuji/wharfkeep"
+readme = "README.md"
+keywords = ["colima", "docker", "macos", "menubar", "containers"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
 
 [dependencies]
 bollard = "0.21.1"
-eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "system_fonts", "wgpu", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "system_fonts", "wgpu"] }
 futures-util = "0.3.34"
 libc = "0.2"
 serde = { version = "1.0.229", features = ["derive"] }
