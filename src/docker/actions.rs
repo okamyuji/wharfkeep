@@ -126,6 +126,25 @@ pub fn parse_port_map(s: &str) -> Result<PortMap, DockerError> {
     }
 }
 
+/// local ドライバはボリューム名をそのままディレクトリ名にするので、Linux の NAME_MAX に合わせる。
+const VOLUME_NAME_MAX: usize = 255;
+
+/// 画面で見えないか、前後の文字の向きを変える書式文字（Unicode の Cf のうち入力に紛れやすいもの）。
+/// 入力欄で見た値と、実際に渡る値が違って見えるのを防ぐ。
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
+}
+
 /// `KEY=VALUE`。値は最初の `=` より後ろすべてで、空でもよい。キーは空白と制御文字を含まない。
 /// 値は改行を含んでよいが、NULはexecveの環境変数に入らないので拒む。
 pub fn parse_env(s: &str) -> Result<(String, String), DockerError> {
@@ -133,7 +152,8 @@ pub fn parse_env(s: &str) -> Result<(String, String), DockerError> {
         Some((k, v))
             if !k.is_empty()
                 && !k.contains(|c: char| c.is_whitespace() || c.is_control())
-                && !v.contains('\0') =>
+                && !v.contains('\0')
+                && !s.contains(is_invisible) =>
         {
             Ok((k.to_string(), v.to_string()))
         }
@@ -145,7 +165,7 @@ pub fn parse_env(s: &str) -> Result<(String, String), DockerError> {
 /// SOURCE は絶対パスか、ボリューム名（moby の RestrictedNamePattern）。`../x` や `~/x` は docker が
 /// ボリューム名として拒むので、ここで先に分かりやすく止める。
 pub fn parse_mount(s: &str) -> Result<Mount, DockerError> {
-    if s.contains(char::is_control) {
+    if s.contains(|c: char| c.is_control() || is_invisible(c)) {
         return Err(DockerError::InvalidMount(s.to_string()));
     }
     let parts: Vec<&str> = s.split(':').collect();
@@ -157,7 +177,8 @@ pub fn parse_mount(s: &str) -> Result<Mount, DockerError> {
     match parts[..] {
         [source, target, ..]
             if parts.len() <= 3
-                && (source.starts_with('/') || check_name(source).is_ok())
+                && (source.starts_with('/')
+                    || (source.len() <= VOLUME_NAME_MAX && check_name(source).is_ok()))
                 && target.starts_with('/') =>
         {
             Ok(Mount {
@@ -493,6 +514,10 @@ mod tests {
             "A\0B=1",
             "A\u{1b}=1",
             "A=x\0y",
+            "A\u{202e}=1",
+            "A=x\u{202e}y",
+            "A\u{200b}=1",
+            "A=\u{feff}",
         ] {
             assert_eq!(
                 parse_env(bad),
@@ -511,6 +536,11 @@ mod tests {
         };
         assert_eq!(parse_mount("/host:/data"), Ok(m("/host", "/data", false)));
         assert_eq!(parse_mount("vol:/v:ro"), Ok(m("vol", "/v", true)));
+        let longest = "v".repeat(VOLUME_NAME_MAX);
+        assert_eq!(
+            parse_mount(&format!("{longest}:/d")),
+            Ok(m(&longest, "/d", false))
+        );
         assert_eq!(parse_mount("vol:/v:rw"), Ok(m("vol", "/v", false)));
         for bad in [
             "",
@@ -528,6 +558,9 @@ mod tests {
             "/a\0b:/y",
             "/a:/b\0",
             "/a:/b\n",
+            "/a\u{202e}b:/y",
+            "/a:/b\u{2066}",
+            &format!("{}:/d", "v".repeat(VOLUME_NAME_MAX + 1)),
         ] {
             assert_eq!(
                 parse_mount(bad),
