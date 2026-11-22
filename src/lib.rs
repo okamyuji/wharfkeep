@@ -1,3 +1,4 @@
+pub mod colima;
 pub mod daemon;
 pub mod gui;
 pub mod i18n;

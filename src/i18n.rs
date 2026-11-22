@@ -63,11 +63,19 @@ pub enum Msg {
     EventLoopCreateFailed,
     EventLoopStopped,
     LangEnvInvalid,
+    ColimaParse,
+    ColimaSocket,
+    ColimaProfile,
+    ColimaCpus,
+    ColimaMemory,
+    ColimaDisk,
+    ColimaSpawn,
+    ColimaFailed,
 }
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 12] = [
+    const ALL: [Msg; 20] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::Reload,
@@ -80,6 +88,14 @@ impl Msg {
         Msg::EventLoopCreateFailed,
         Msg::EventLoopStopped,
         Msg::LangEnvInvalid,
+        Msg::ColimaParse,
+        Msg::ColimaSocket,
+        Msg::ColimaProfile,
+        Msg::ColimaCpus,
+        Msg::ColimaMemory,
+        Msg::ColimaDisk,
+        Msg::ColimaSpawn,
+        Msg::ColimaFailed,
     ];
 
     pub fn text(self, lang: Lang) -> &'static str {
@@ -116,6 +132,24 @@ impl Msg {
                 "unsupported value (use en or ja); using the OS language"
             }
             (Msg::LangEnvInvalid, Lang::Ja) => "使えない値です（en か ja）。OSの言語を使います",
+            (Msg::ColimaParse, Lang::En) => "cannot read the colima output at line",
+            (Msg::ColimaParse, Lang::Ja) => "colima の出力を読めません（行）",
+            (Msg::ColimaSocket, Lang::En) => "unexpected docker socket address",
+            (Msg::ColimaSocket, Lang::Ja) => "docker のソケットのアドレスが想定外です",
+            (Msg::ColimaProfile, Lang::En) => "invalid profile name (use A-Z a-z 0-9 . _ - only)",
+            (Msg::ColimaProfile, Lang::Ja) => {
+                "プロフィール名が不正です（使える文字は A-Z a-z 0-9 . _ - だけ）"
+            }
+            (Msg::ColimaCpus, Lang::En) => "CPU count must be 1 or more",
+            (Msg::ColimaCpus, Lang::Ja) => "CPU 数は 1 以上にしてください",
+            (Msg::ColimaMemory, Lang::En) => "memory must be a finite number above 0 (GiB)",
+            (Msg::ColimaMemory, Lang::Ja) => "メモリは 0 より大きい有限の数（GiB）にしてください",
+            (Msg::ColimaDisk, Lang::En) => "disk size must be 1 GiB or more",
+            (Msg::ColimaDisk, Lang::Ja) => "ディスクは 1 GiB 以上にしてください",
+            (Msg::ColimaSpawn, Lang::En) => "cannot run colima",
+            (Msg::ColimaSpawn, Lang::Ja) => "colima を実行できません",
+            (Msg::ColimaFailed, Lang::En) => "colima failed (exit code)",
+            (Msg::ColimaFailed, Lang::Ja) => "colima が失敗しました（終了コード）",
         }
     }
 }
