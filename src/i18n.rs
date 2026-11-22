@@ -217,10 +217,10 @@ impl Msg {
                 "ポートの対応が不正です（HOST:CONTAINER か HOST:CONTAINER/udp の形で、ポートは 1〜65535）"
             }
             (Msg::DockerInvalidId, Lang::En) => {
-                "invalid container ID or name (use A-Z a-z 0-9 . _ - only, 2 characters or more, not starting with . or -)"
+                "invalid name, ID or image reference (container, volume and network names: A-Z a-z 0-9 . _ - only, 2 characters or more, not starting with . or -)"
             }
             (Msg::DockerInvalidId, Lang::Ja) => {
-                "コンテナの ID か名前が不正です（使える文字は A-Z a-z 0-9 . _ - だけ。2 文字以上で、先頭に . と - は使えません）"
+                "名前、ID、イメージ参照が不正です（コンテナ、ボリューム、ネットワークの名前は A-Z a-z 0-9 . _ - だけ。2 文字以上で、先頭に . と - は使えません）"
             }
             (Msg::StartInstance, Lang::En) => "Start {name}",
             (Msg::StartInstance, Lang::Ja) => "{name} を起動",

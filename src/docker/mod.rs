@@ -53,7 +53,7 @@ pub enum DockerError {
     /// bollard が返した本文。表示用の文言の後ろにそのまま付ける。
     Api(String),
     InvalidPort(String),
-    /// コンテナの ID か名前が、URL の一部として安全な形ではない。
+    /// 名前・ID・イメージ参照が、URL の一部として安全な形ではない。
     InvalidId(String),
 }
 
@@ -83,9 +83,10 @@ impl From<bollard::errors::Error> for DockerError {
     }
 }
 
-/// bollard は ID を `/containers/{id}/...` に埋め込むので、`/` や `?` を含む値は別の経路に当たる。
+/// コンテナ・ボリューム・ネットワークの名前か ID。
+/// bollard は名前を `/containers/{id}/...` などに埋め込むので、`/` や `?` を含む値は別の経路に当たる。
 /// 受け付ける形は moby の `daemon/names` の `RestrictedNamePattern`（`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`）と同じ。
-pub(crate) fn check_container_ref(id: &str) -> Result<(), DockerError> {
+pub(crate) fn check_name(id: &str) -> Result<(), DockerError> {
     let mut chars = id.chars();
     let valid = id.len() >= 2
         && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
@@ -94,6 +95,21 @@ pub(crate) fn check_container_ref(id: &str) -> Result<(), DockerError> {
         Ok(())
     } else {
         Err(DockerError::InvalidId(id.to_string()))
+    }
+}
+
+/// イメージの名前・タグ・ID・digest を受ける。`/`・`:`・`@` は参照の文法（distribution/reference の
+/// `regexp.go`）で正当なので、文字集合をその範囲に絞り、`.` と `..` と空のパス要素と先頭の `-` を拒む。
+pub(crate) fn check_image_ref(r: &str) -> Result<(), DockerError> {
+    let valid = !r.starts_with('-')
+        && r.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '/' | ':' | '@' | '+')
+        })
+        && r.split('/').all(|seg| !matches!(seg, "" | "." | ".."));
+    if valid {
+        Ok(())
+    } else {
+        Err(DockerError::InvalidId(r.to_string()))
     }
 }
 
@@ -184,7 +200,7 @@ impl Engine {
     }
 
     async fn failed_by_inspect(&self, id: &str, state: &str) -> bool {
-        if check_container_ref(id).is_err() {
+        if check_name(id).is_err() {
             return is_failed(state, None, "", false);
         }
         // 消えたコンテナなど inspect に失敗したときは、失敗とは決めつけない。
@@ -445,20 +461,72 @@ mod tests {
     }
 
     #[test]
-    fn container_ref_accepts_the_names_docker_accepts() {
+    fn name_accepts_the_names_docker_accepts() {
         for ok in ["ab", "web-1", "my_app.v2", "0a", "A9", &"a".repeat(64)] {
-            assert_eq!(check_container_ref(ok), Ok(()), "{ok}");
+            assert_eq!(check_name(ok), Ok(()), "{ok}");
         }
     }
 
     #[test]
-    fn container_ref_rejects_empty_leading_symbols_and_url_syntax() {
+    fn name_rejects_empty_leading_symbols_and_url_syntax() {
         for bad in [
             "", "a", "-ab", ".ab", "_ab", "a/b", "/ab", "a?b", "a#b", "..", "a b", "a\nb", "aé",
             "a%2f",
         ] {
             assert_eq!(
-                check_container_ref(bad),
+                check_name(bad),
+                Err(DockerError::InvalidId(bad.into())),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_ref_accepts_names_tags_digests_and_ids() {
+        let digest = format!("repo@sha256:{}", "a1".repeat(32));
+        for ok in [
+            "nginx",
+            "nginx:alpine",
+            "ghcr.io/owner/app:1.2",
+            "localhost:5000/x",
+            "library/ubuntu@sha256:0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd",
+            "sha256:0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd",
+            "0123abcd",
+            "a",
+            "my_repo/a.b-c:v1_2+x",
+            digest.as_str(),
+        ] {
+            assert_eq!(check_image_ref(ok), Ok(()), "{ok}");
+        }
+    }
+
+    #[test]
+    fn image_ref_rejects_url_syntax_and_odd_shapes() {
+        for bad in [
+            "",
+            "/nginx",
+            "-nginx",
+            "a?b",
+            "a#b",
+            "a b",
+            "a\tb",
+            "a\nb",
+            "a\u{7f}b",
+            "a%2fb",
+            "x/../y",
+            "..",
+            "../x",
+            "x/..",
+            ".",
+            "x/./y",
+            "a//b",
+            "a/",
+            "aé",
+            "a\\b",
+            "x/../../containers/abc/kill?signal=KILL#",
+        ] {
+            assert_eq!(
+                check_image_ref(bad),
                 Err(DockerError::InvalidId(bad.into())),
                 "{bad:?}"
             );
@@ -468,8 +536,11 @@ mod tests {
     #[test]
     fn invalid_id_message_is_in_both_languages() {
         let e = DockerError::InvalidId("a/b".into());
-        assert!(e.message(Lang::En).contains("invalid container ID"));
-        assert!(e.message(Lang::Ja).contains("コンテナの ID"));
+        assert!(
+            e.message(Lang::En)
+                .contains("invalid name, ID or image reference")
+        );
+        assert!(e.message(Lang::Ja).contains("名前、ID、イメージ参照"));
         assert!(e.message(Lang::En).contains("\"a/b\""));
     }
 }

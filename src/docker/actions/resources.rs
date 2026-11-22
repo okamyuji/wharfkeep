@@ -1,7 +1,7 @@
 //! ボリューム・ネットワークの操作と、全体の整理。
 
 use super::{reclaimed, to_json};
-use crate::docker::{DockerError, Engine};
+use crate::docker::{DockerError, Engine, check_name};
 use bollard::models::{NetworkCreateRequest, VolumeCreateRequest};
 use bollard::query_parameters::{
     InspectNetworkOptions, PruneContainersOptions, PruneNetworksOptions, PruneVolumesOptions,
@@ -36,6 +36,7 @@ impl Engine {
     }
 
     pub async fn remove_volume(&self, name: &str) -> Result<(), DockerError> {
+        check_name(name)?;
         Ok(self
             .docker
             .remove_volume(name, None::<RemoveVolumeOptions>)
@@ -52,6 +53,7 @@ impl Engine {
     }
 
     pub async fn inspect_volume(&self, name: &str) -> Result<serde_json::Value, DockerError> {
+        check_name(name)?;
         to_json(&self.docker.inspect_volume(name).await?)
     }
 
@@ -66,6 +68,7 @@ impl Engine {
     }
 
     pub async fn remove_network(&self, id: &str) -> Result<(), DockerError> {
+        check_name(id)?;
         Ok(self.docker.remove_network(id).await?)
     }
 
@@ -79,6 +82,7 @@ impl Engine {
     }
 
     pub async fn inspect_network(&self, id: &str) -> Result<serde_json::Value, DockerError> {
+        check_name(id)?;
         let r = self
             .docker
             .inspect_network(id, None::<InspectNetworkOptions>)

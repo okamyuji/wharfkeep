@@ -1,7 +1,7 @@
 //! イメージの取得と整理。
 
 use super::{filter, reclaimed, to_json};
-use crate::docker::{DockerError, Engine, size_to_option};
+use crate::docker::{DockerError, Engine, check_image_ref, size_to_option};
 use bollard::models::CreateImageInfo;
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, PruneImagesOptionsBuilder, RemoveImageOptionsBuilder,
@@ -44,12 +44,15 @@ impl Engine {
     }
 
     pub async fn remove_image(&self, id: &str, force: bool) -> Result<(), DockerError> {
+        check_image_ref(id)?;
         let opts = RemoveImageOptionsBuilder::new().force(force).build();
         self.docker.remove_image(id, Some(opts), None).await?;
         Ok(())
     }
 
     pub async fn tag(&self, id: &str, repo: &str, tag: &str) -> Result<(), DockerError> {
+        check_image_ref(id)?;
+        check_image_ref(repo)?;
         let opts = TagImageOptionsBuilder::new().repo(repo).tag(tag).build();
         Ok(self.docker.tag_image(id, Some(opts)).await?)
     }
@@ -63,6 +66,7 @@ impl Engine {
     }
 
     pub async fn inspect_image(&self, id: &str) -> Result<serde_json::Value, DockerError> {
+        check_image_ref(id)?;
         to_json(&self.docker.inspect_image(id).await?)
     }
 }

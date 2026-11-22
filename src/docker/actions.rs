@@ -6,7 +6,7 @@ mod resources;
 pub use images::PullProgress;
 pub use resources::NetDriver;
 
-use super::{DockerError, Engine, check_container_ref, size_to_option};
+use super::{DockerError, Engine, check_name, size_to_option};
 use bollard::models::{
     ContainerCpuStats, ContainerCreateBody, HostConfig, PortBinding,
     RestartPolicy as BollardRestartPolicy, RestartPolicyNameEnum,
@@ -202,7 +202,7 @@ pub(super) fn filter(
 
 impl Engine {
     pub async fn start(&self, id: &str) -> Result<(), DockerError> {
-        check_container_ref(id)?;
+        check_name(id)?;
         Ok(self
             .docker
             .start_container(id, None::<StartContainerOptions>)
@@ -210,7 +210,7 @@ impl Engine {
     }
 
     pub async fn stop(&self, id: &str) -> Result<(), DockerError> {
-        check_container_ref(id)?;
+        check_name(id)?;
         Ok(self
             .docker
             .stop_container(id, None::<StopContainerOptions>)
@@ -218,7 +218,7 @@ impl Engine {
     }
 
     pub async fn restart(&self, id: &str) -> Result<(), DockerError> {
-        check_container_ref(id)?;
+        check_name(id)?;
         Ok(self
             .docker
             .restart_container(id, None::<RestartContainerOptions>)
@@ -226,30 +226,30 @@ impl Engine {
     }
 
     pub async fn pause(&self, id: &str) -> Result<(), DockerError> {
-        check_container_ref(id)?;
+        check_name(id)?;
         Ok(self.docker.pause_container(id).await?)
     }
 
     pub async fn unpause(&self, id: &str) -> Result<(), DockerError> {
-        check_container_ref(id)?;
+        check_name(id)?;
         Ok(self.docker.unpause_container(id).await?)
     }
 
     pub async fn rename(&self, id: &str, new: &str) -> Result<(), DockerError> {
-        check_container_ref(id)?;
-        check_container_ref(new)?;
+        check_name(id)?;
+        check_name(new)?;
         let opts = RenameContainerOptionsBuilder::new().name(new).build();
         Ok(self.docker.rename_container(id, opts).await?)
     }
 
     pub async fn remove(&self, id: &str, force: bool) -> Result<(), DockerError> {
-        check_container_ref(id)?;
+        check_name(id)?;
         let opts = RemoveContainerOptionsBuilder::new().force(force).build();
         Ok(self.docker.remove_container(id, Some(opts)).await?)
     }
 
     pub async fn inspect(&self, id: &str) -> Result<serde_json::Value, DockerError> {
-        check_container_ref(id)?;
+        check_name(id)?;
         let r = self
             .docker
             .inspect_container(id, None::<InspectContainerOptions>)
@@ -259,7 +259,7 @@ impl Engine {
 
     /// 1 回分の CPU とメモリ。stream=false の応答には、直前の標本（precpu）が入っている。
     pub async fn stats_once(&self, id: &str) -> Result<Usage, DockerError> {
-        check_container_ref(id)?;
+        check_name(id)?;
         let opts = StatsOptionsBuilder::new()
             .stream(false)
             .one_shot(false)
@@ -295,7 +295,7 @@ impl Engine {
         id: &str,
         follow: bool,
     ) -> impl Stream<Item = Result<String, DockerError>> + '_ {
-        if let Err(e) = check_container_ref(id) {
+        if let Err(e) = check_name(id) {
             return Either::Left(futures_util::stream::once(std::future::ready(Err(e))));
         }
         let opts = LogsOptionsBuilder::new()
@@ -570,6 +570,70 @@ mod tests {
             Err(DockerError::InvalidId("a/b".into()))
         );
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn volume_network_and_image_operations_reject_bad_names_without_calling_docker() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (e, count) = counting_engine(dir.path());
+        let bad = "x/../../containers/abc/kill?signal=KILL#";
+        let want = DockerError::InvalidId(bad.into());
+        assert_eq!(e.remove_volume(bad).await, Err(want.clone()));
+        assert_eq!(e.inspect_volume(bad).await, Err(want.clone()));
+        assert_eq!(e.remove_network(bad).await, Err(want.clone()));
+        assert_eq!(e.inspect_network(bad).await, Err(want.clone()));
+        assert_eq!(e.remove_image(bad, true).await, Err(want.clone()));
+        assert_eq!(e.inspect_image(bad).await, Err(want.clone()));
+        assert_eq!(e.tag(bad, "app", "1").await, Err(want.clone()));
+        assert_eq!(e.tag("nginx", bad, "1").await, Err(want.clone()));
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn valid_volume_network_and_image_names_reach_docker() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (e, count) = counting_engine(dir.path());
+        let digest = format!("repo@sha256:{}", "a1".repeat(32));
+        let mut sent = 0;
+        for r in [
+            "nginx:alpine",
+            "ghcr.io/owner/app:1.2",
+            "localhost:5000/x",
+            &digest,
+        ] {
+            assert!(
+                matches!(e.inspect_image(r).await, Err(DockerError::Api(_))),
+                "{r}"
+            );
+            assert!(matches!(
+                e.remove_image(r, false).await,
+                Err(DockerError::Api(_))
+            ));
+            sent += 2;
+        }
+        assert!(matches!(
+            e.tag("nginx:alpine", "ghcr.io/o/app", "1").await,
+            Err(DockerError::Api(_))
+        ));
+        assert!(matches!(
+            e.remove_volume("data-1").await,
+            Err(DockerError::Api(_))
+        ));
+        assert!(matches!(
+            e.inspect_volume("data-1").await,
+            Err(DockerError::Api(_))
+        ));
+        assert!(matches!(
+            e.remove_network("net_1").await,
+            Err(DockerError::Api(_))
+        ));
+        assert!(matches!(
+            e.inspect_network("net_1").await,
+            Err(DockerError::Api(_))
+        ));
+        assert_eq!(count.load(Ordering::SeqCst), sent + 5);
     }
 
     #[tokio::test]
