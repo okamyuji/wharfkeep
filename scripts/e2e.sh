@@ -61,9 +61,14 @@ restore() {
     colima start default >/dev/null 2>&1 || true
   fi
 }
+# macOSの/bin/bash（3.2）は未定義の変数で止まったときもEXITのトラップに0を渡すので、最後まで来たかで判定する。
+succeeded=0
 on_exit() {
   local rc=$?
   restore
+  if [ "$succeeded" != 1 ] && [ "$rc" = 0 ]; then
+    rc=1
+  fi
   exit "$rc"
 }
 trap on_exit EXIT
@@ -128,9 +133,11 @@ choose_menu_item() {
   done
   shot_rect "$stage" "$((ix + iw / 2 - 300)),$iy,600,220"
   if [ "$item" = last ]; then
-    ax "$pid" "click last menu item of menu 1 of menu bar item 1 of menu bar 2" >/dev/null
+    ax "$pid" "click last menu item of menu 1 of menu bar item 1 of menu bar 2" >/dev/null ||
+      fail "メニューの最後の項目を押せません"
   else
-    ax "$pid" "click menu item \"$item\" of menu 1 of menu bar item 1 of menu bar 2" >/dev/null
+    ax "$pid" "click menu item \"$item\" of menu 1 of menu bar item 1 of menu bar 2" >/dev/null ||
+      fail "メニューの「${item}」を押せません"
   fi
   wait || true
 }
@@ -233,10 +240,10 @@ choose_menu_item "$dpid" "Stop default" "en-7b-menu-stop"
 wait_until 120 state_default_is Stopped Unavailable || fail "default が止まったことが状態ファイルに出ません: $(show_state)"
 wait_until 10 icon_is "$dpid" "wharfkeep: no instance running" || fail "アイコンが実行中なしになりません: $(icon_desc "$dpid")"
 shot_rect "en-7c-icon-stopped" "$icon_rect"
-echo "(7) 止めた: $(show_state) / アイコン「$(icon_desc "$dpid")」（前は「$before」）"
+echo "(7) 止めた: $(show_state) / アイコン「$(icon_desc "$dpid")」（前は「${before}」）"
 choose_menu_item "$dpid" "Start default" "en-7d-menu-start"
 wait_until 240 state_default_is Running Ready || fail "default が起動したことが状態ファイルに出ません: $(show_state)"
-wait_until 10 icon_is "$dpid" "$before" || fail "アイコンが「$before」に戻りません: $(icon_desc "$dpid")"
+wait_until 10 icon_is "$dpid" "$before" || fail "アイコンが「${before}」に戻りません: $(icon_desc "$dpid")"
 shot_rect "en-7e-icon-started" "$icon_rect"
 echo "(7) 起動した: $(show_state) / アイコン「$(icon_desc "$dpid")」"
 
@@ -284,4 +291,5 @@ launchctl kickstart "$service"
 wait_until 10 launchd_runs || fail "launchdからデーモンを起動し直せません"
 echo "(restore) launchdのデーモン pid=$(launchd_pid) を動かしたまま終える"
 
+succeeded=1
 echo "e2e: 成功（画面は ${out}）"
