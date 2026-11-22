@@ -192,3 +192,30 @@ async fn volume_and_network_lifecycle() {
     assert!(!summary.volumes.iter().any(|v| v.name == base));
     assert!(!summary.networks.iter().any(|n| n.name == base));
 }
+
+#[tokio::test]
+#[ignore = "実機の colima が要る"]
+async fn container_that_fails_to_start_is_flagged_failed() {
+    let socket = socket();
+    let name = format!("wharfkeep-start-fail-{}", std::process::id());
+    let _guard = Cleanup {
+        socket: socket.clone(),
+        kind: "container",
+        name: name.clone(),
+    };
+    let engine = Engine::connect(&socket).unwrap();
+    pull_image(&engine, "alpine:latest").await;
+    // 作成は成功し、起動で失敗する。コンテナは created のまま残る。
+    let out = Command::new("docker")
+        .arg("-H")
+        .arg(format!("unix://{}", socket.display()))
+        .args(["run", "--name", &name, "alpine:latest", "/nonexistent-cmd"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+
+    let summary = engine.summary().await.unwrap();
+    let row = summary.containers.iter().find(|c| c.name == name).unwrap();
+    assert_eq!(row.state, "created");
+    assert!(row.failed);
+}

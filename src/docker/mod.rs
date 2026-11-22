@@ -168,9 +168,10 @@ impl Engine {
     }
 }
 
-/// 一覧の状態が止まっている・再起動中のときだけ、失敗かどうかを inspect で調べる。
+/// 一覧の状態が止まっている・再起動中・作成のみのときに、失敗かどうかを inspect で調べる。
+/// 起動に失敗したコンテナは `created` のまま `State.Error` を持つ。
 fn needs_inspect(state: &str) -> bool {
-    !matches!(state, "running" | "paused" | "created")
+    !matches!(state, "running" | "paused")
 }
 
 fn container_name(names: &[String]) -> String {
@@ -280,12 +281,71 @@ mod tests {
 
     #[test]
     fn inspect_only_for_stopped_states() {
-        for s in ["exited", "dead", "restarting"] {
+        for s in ["exited", "dead", "restarting", "created"] {
             assert!(needs_inspect(s), "{s}");
         }
-        for s in ["running", "paused", "created"] {
+        for s in ["running", "paused"] {
             assert!(!needs_inspect(s), "{s}");
         }
+    }
+
+    #[test]
+    fn created_container_is_failed_only_with_a_start_error() {
+        assert!(is_failed("created", Some(127), "exec not found", false));
+        assert!(!is_failed("created", Some(0), "", false));
+    }
+
+    /// 1 回だけ接続を受け、`body` を返す偽の Docker。`None` なら応答せず閉じる。
+    fn fake_inspect(path: &Path, body: Option<&'static str>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::UnixListener::bind(path).unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut conn, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf).await;
+                if let Some(b) = body {
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}",
+                        b.len()
+                    );
+                    let _ = conn.write_all(resp.as_bytes()).await;
+                }
+            }
+        });
+    }
+
+    async fn inspected(body: Option<&'static str>, state: &str) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("d.sock");
+        fake_inspect(&sock, body);
+        Engine::connect(&sock)
+            .unwrap()
+            .failed_by_inspect("c1", state)
+            .await
+    }
+
+    #[tokio::test]
+    async fn inspect_reports_start_error_of_created_container() {
+        let body = r#"{"State":{"Status":"created","Error":"exec: not found","ExitCode":127}}"#;
+        assert!(inspected(Some(body), "created").await);
+    }
+
+    #[tokio::test]
+    async fn inspect_clean_exit_is_not_failed() {
+        let body = r#"{"State":{"Status":"exited","Error":"","ExitCode":0}}"#;
+        assert!(!inspected(Some(body), "exited").await);
+    }
+
+    #[tokio::test]
+    async fn inspect_oom_kill_is_failed() {
+        let body = r#"{"State":{"Status":"exited","ExitCode":0,"OOMKilled":true}}"#;
+        assert!(inspected(Some(body), "exited").await);
+    }
+
+    #[tokio::test]
+    async fn inspect_failure_falls_back_to_the_listed_state() {
+        assert!(inspected(None, "restarting").await);
+        assert!(!inspected(None, "exited").await);
     }
 
     #[test]
