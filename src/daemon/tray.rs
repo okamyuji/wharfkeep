@@ -163,6 +163,8 @@ impl MenuTarget {
             entries: RefCell::new(Vec::new()),
             proxy,
         });
+        // SAFETY: `this`はset_ivarsを済ませた未初期化のMenuTargetで、NSObjectの`init`をちょうど1回呼ぶ。
+        // `mtm`がメインスレッドを保証し、クラスはMainThreadOnlyで宣言している。
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -228,6 +230,8 @@ impl StatusItem {
             if *e == MenuEntry::OpenWindow && i > 0 {
                 self.menu.addItem(&NSMenuItem::separatorItem(self.mtm));
             }
+            // SAFETY: `mtm`がメインスレッドを保証する。titleとkeyEquivalentは生きているNSStringで、
+            // `choose:`はMenuTargetが実装するselector。このselectorは下のsetTargetでMenuTargetに結ぶ。
             let item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     self.mtm.alloc(),
@@ -237,6 +241,8 @@ impl StatusItem {
                 )
             };
             // targetは弱い参照なので、受け手はStatusItemが持ち続ける。
+            // SAFETY: メインスレッドで呼ぶ（`self.mtm`）。targetはメニュー項目が弱く参照する。
+            // 持ち主は`self.target`で、StatusItemが生きている間は解放されない。
             unsafe { item.setTarget(Some(&self.target)) };
             item.setTag(i as isize);
             if *e == MenuEntry::StartAtLogin && start_at_login {
@@ -252,6 +258,8 @@ fn ns_image(icon: IconState) -> Retained<NSImage> {
     let size = NSSize::new(ICON_POINTS, ICON_POINTS);
     let image = NSImage::initWithSize(NSImage::alloc(), size);
     let px = ICON_PIXELS as isize;
+    // SAFETY: planesにnullを渡すので、AppKitが自前で確保する。幅と高さは`px`、1画素4バイト（RGBA8）、
+    // bytesPerRowは`px * 4`、bitsPerPixelは32で互いに矛盾せず、colorSpaceNameは定数のNSString。
     let rep = unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
             NSBitmapImageRep::alloc(),
@@ -270,7 +278,9 @@ fn ns_image(icon: IconState) -> Retained<NSImage> {
     };
     if let Some(rep) = rep {
         let rgba = icon_rgba(icon, ICON_PIXELS);
-        // 上の引数でAppKitが`px * 4 * px`バイトを確保している。
+        assert_eq!(rgba.len(), (ICON_PIXELS * ICON_PIXELS * 4) as usize);
+        // SAFETY: 確保した`bitmapData`は`px * 4 * px`（36 x 36 x 4）バイトで非null。`icon_rgba`は
+        // 同じ`ICON_PIXELS`から同じ長さのVecを返し、別々の確保なので重ならない。`rep`はここで生きている。
         unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), rep.bitmapData(), rgba.len()) };
         rep.setSize(size);
         image.addRepresentation(&rep);
