@@ -170,7 +170,10 @@ fn write_synced(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
 /// SIGKILL で残った `state.json.*.tmp` のうち、`TEMP_STALE_AFTER` より古いものを消す。
 /// 消した数を返す。1件を消せなくても続ける。デーモンの起動時に呼ぶ。
 pub fn remove_stale_temps(dir: &Path) -> io::Result<usize> {
-    let now = SystemTime::now();
+    remove_stale_temps_at(dir, SystemTime::now())
+}
+
+fn remove_stale_temps_at(dir: &Path, now: SystemTime) -> io::Result<usize> {
     let mut removed = 0;
     for entry in std::fs::read_dir(dir)?.flatten() {
         let name = entry.file_name();
@@ -538,5 +541,38 @@ mod tests {
             .set_modified(SystemTime::now() - Duration::from_secs(600))
             .unwrap();
         assert_eq!(remove_stale_temps(dir.path()).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_limit_is_16_mib() {
+        assert_eq!(MAX_READ_BYTES, 16_777_216);
+    }
+
+    #[test]
+    fn temp_exactly_60s_old_is_kept_and_61s_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let make = |name: &str, age: u64| {
+            let p = dir.path().join(name);
+            let f = std::fs::File::create(&p).unwrap();
+            f.set_modified(now - Duration::from_secs(age)).unwrap();
+            p
+        };
+        let edge = make("state.json.1.1.tmp", 60);
+        let old = make("state.json.1.2.tmp", 61);
+        assert_eq!(remove_stale_temps_at(dir.path(), now).unwrap(), 1);
+        assert!(edge.exists());
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn unreadable_file_is_io_error_not_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let err = read(&path).unwrap_err();
+        assert!(matches!(err, SnapshotError::Io { .. }), "{err:?}");
     }
 }
