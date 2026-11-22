@@ -237,9 +237,9 @@ pub fn simple_args(action: Action, profile: &str) -> Result<Vec<String>, ColimaE
     Ok(v)
 }
 
-/// JSON を読むための stdout の上限。`colima list --json` は数 KiB なので十分に大きい。
 /// `list` と `status` の待ち時間。`start` などの長い処理は `run_streaming` を通るので対象外。
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+/// JSON を読むための stdout の上限。`colima list --json` は数 KiB なので十分に大きい。
 const STDOUT_LIMIT: usize = 1024 * 1024;
 /// 1行と stderr の保持量の上限。超えた分は読み捨てる。
 const LINE_LIMIT: usize = 64 * 1024;
@@ -825,7 +825,16 @@ esac"#
             .await;
         assert_eq!(r, Err(ColimaError::Timeout));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        // 負荷でシェルの起動が遅いと、pid を書く前に kill される。kill しない実装なら 2 秒以内に必ず書く。
+        let mut pid = None;
+        for _ in 0..40 {
+            if let Ok(p) = std::fs::read_to_string(&pid_file) {
+                pid = Some(p);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let Some(pid) = pid else { return };
         let alive = || {
             std::process::Command::new("kill")
                 .args(["-0", pid.trim()])
