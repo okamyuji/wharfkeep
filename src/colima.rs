@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -20,6 +21,7 @@ pub enum ColimaError {
     Spawn(String),
     Failed { code: Option<i32>, stderr: String },
     OutputTooLarge,
+    Timeout,
 }
 
 impl ColimaError {
@@ -34,6 +36,7 @@ impl ColimaError {
             Self::InvalidDisk => t(Msg::ColimaDisk).into(),
             Self::Spawn(e) => format!("{}: {e}", t(Msg::ColimaSpawn)),
             Self::OutputTooLarge => t(Msg::ColimaOutputTooLarge).into(),
+            Self::Timeout => t(Msg::ColimaTimeout).into(),
             Self::Failed { code, stderr } => {
                 let code = code.map_or("-".to_string(), |c| c.to_string());
                 format!("{}: {code}: {}", t(Msg::ColimaFailed), stderr.trim())
@@ -235,6 +238,8 @@ pub fn simple_args(action: Action, profile: &str) -> Result<Vec<String>, ColimaE
 }
 
 /// JSON を読むための stdout の上限。`colima list --json` は数 KiB なので十分に大きい。
+/// `list` と `status` の待ち時間。`start` などの長い処理は `run_streaming` を通るので対象外。
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 const STDOUT_LIMIT: usize = 1024 * 1024;
 /// 1行と stderr の保持量の上限。超えた分は読み捨てる。
 const LINE_LIMIT: usize = 64 * 1024;
@@ -271,6 +276,17 @@ impl Colima {
     }
 
     async fn capture(&self, args: &[&str]) -> Result<String, ColimaError> {
+        self.capture_within(args, CAPTURE_TIMEOUT).await
+    }
+
+    /// 固まった colima で状態の更新が止まらないよう、`limit` で打ち切る。落とした future が子を kill する。
+    async fn capture_within(&self, args: &[&str], limit: Duration) -> Result<String, ColimaError> {
+        tokio::time::timeout(limit, self.capture_unbounded(args))
+            .await
+            .map_err(|_| ColimaError::Timeout)?
+    }
+
+    async fn capture_unbounded(&self, args: &[&str]) -> Result<String, ColimaError> {
         let mut child = Command::new(&self.bin)
             .args(args)
             .env("PATH", &self.path_env)
@@ -667,6 +683,7 @@ mod tests {
             (ColimaError::InvalidDisk, ""),
             (ColimaError::Spawn("io-x".into()), "io-x"),
             (ColimaError::OutputTooLarge, ""),
+            (ColimaError::Timeout, ""),
             (
                 ColimaError::Failed {
                     code: Some(9),
@@ -792,6 +809,38 @@ esac"#
         assert_eq!(at.capture(&[]).await.unwrap().len(), 1024 * 1024);
         let over = fake(&d, "head -c 1048577 /dev/zero | tr '\\0' x");
         assert_eq!(over.capture(&[]).await, Err(ColimaError::OutputTooLarge));
+    }
+
+    #[tokio::test]
+    async fn capture_kills_a_hung_colima_after_the_limit() {
+        let d = tempfile::tempdir().unwrap();
+        let pid_file = d.path().join("pid");
+        let c = fake(
+            &d,
+            &format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+        );
+        let started = std::time::Instant::now();
+        let r = c
+            .capture_within(&[], std::time::Duration::from_millis(500))
+            .await;
+        assert_eq!(r, Err(ColimaError::Timeout));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let alive = || {
+            std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        for _ in 0..40 {
+            if !alive() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("colima still running");
     }
 
     #[tokio::test]
