@@ -18,6 +18,34 @@ use std::path::Path;
 
 const REQUEST_TIMEOUT_SECS: u64 = 120;
 
+/// 一覧や失敗の判定が変わる action だけを購読する。`exec_*` や `health_status` は一覧に効かず、
+/// `docker exec` や healthcheck のたびに取り直しが走る。`event` フィルタは型をまたいで効くので、
+/// イメージ・ボリューム・ネットワークの変化（pull、delete、connect など）もここに入れる。
+const EVENT_ACTIONS: [&str; 22] = [
+    "create",
+    "destroy",
+    "die",
+    "start",
+    "stop",
+    "kill",
+    "pause",
+    "unpause",
+    "rename",
+    "oom",
+    "restart",
+    "update",
+    "commit",
+    "pull",
+    "delete",
+    "tag",
+    "untag",
+    "import",
+    "load",
+    "remove",
+    "connect",
+    "disconnect",
+];
+
 /// Docker 操作の失敗。文言は `message` で言語を選んで作る。
 #[derive(Debug, Clone, PartialEq)]
 pub enum DockerError {
@@ -156,7 +184,10 @@ impl Engine {
 
     /// 変化の通知だけを流す。中身は読み直しで取る。
     pub fn events(&self) -> impl Stream<Item = Result<(), DockerError>> + '_ {
-        let filters = HashMap::from([("type", vec!["container", "image", "volume", "network"])]);
+        let filters = HashMap::from([
+            ("type", vec!["container", "image", "volume", "network"]),
+            ("event", EVENT_ACTIONS.to_vec()),
+        ]);
         let opts = EventsOptionsBuilder::new().filters(&filters).build();
         self.docker
             .events(Some(opts))
@@ -218,6 +249,7 @@ pub(crate) fn size_to_option(size: i64) -> Option<u64> {
 mod tests {
     use super::*;
     use bollard::models::PortSummaryTypeEnum;
+    use std::time::Duration;
 
     fn port(ip: &str, private: u16, public: Option<u16>, t: PortSummaryTypeEnum) -> PortSummary {
         PortSummary {
@@ -342,6 +374,32 @@ mod tests {
     async fn inspect_failure_falls_back_to_the_listed_state() {
         assert!(inspected(None, "restarting").await);
         assert!(!inspected(None, "exited").await);
+    }
+
+    #[tokio::test]
+    async fn events_subscribe_only_to_list_changing_actions() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("d.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = conn.read(&mut buf).await.unwrap();
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+            std::future::pending::<()>().await;
+        });
+        let engine = Engine::connect(&sock).unwrap();
+        let mut stream = std::pin::pin!(engine.events());
+        let _ = tokio::time::timeout(Duration::from_millis(200), stream.next()).await;
+        let req = rx.await.unwrap();
+        for a in EVENT_ACTIONS {
+            assert!(req.contains(a), "{a}: {req}");
+        }
+        for noisy in ["exec_create", "exec_start", "exec_die", "health_status"] {
+            assert!(!req.contains(noisy), "{noisy}: {req}");
+        }
     }
 
     #[test]
