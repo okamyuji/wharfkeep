@@ -7,6 +7,20 @@ A macOS menu bar app for watching and controlling [Colima](https://github.com/ab
 
 wharfkeep runs as two processes. A small daemon stays in the menu bar and keeps watching Colima and Docker. The window is a separate process that starts only when you open it and exits when you close it, so it holds no memory while hidden.
 
+## Screenshots
+
+The dashboard. The bar on the left of a card turns coral when a container failed to start.
+
+![Dashboard](docs/images/dashboard.png)
+
+The container list. Each row has its own start, stop, pause, restart, logs, shell, rename and delete buttons, and a status bar on the left.
+
+![Containers](docs/images/containers.png)
+
+Cleaning up images. Every delete asks for confirmation first.
+
+![Clean up images](docs/images/cleanup.png)
+
 ## Features
 
 - Menu bar icon that shows the overall state at a glance:
@@ -78,21 +92,7 @@ cargo deny check licenses
 
 Tests that need a running Colima instance or open a Terminal window are ignored by default. Run them with `cargo test -- --ignored`.
 
-`scripts/e2e.sh` tests the bundle that `scripts/bundle.sh` built. It launches the app the way macOS does, uses the menu bar through the Accessibility API, opens and closes the window, and checks the state file and screenshots. It needs Accessibility and Screen Recording permission for your terminal and a running Colima instance. It stops with an error when the screen is locked. It creates an instance named `wk-e2e` for the delete and cleanup checks and deletes it at the end; it stops when an instance with that name already exists. It stops `default` once and starts it again. It changes the login item while it runs.
-
-## Screenshots
-
-The dashboard. The bar on the left of a card turns coral when a container failed to start.
-
-![Dashboard](docs/images/dashboard.png)
-
-The container list. Each row has its own start, stop, pause, restart, logs, shell, rename and delete buttons, and a status bar on the left.
-
-![Containers](docs/images/containers.png)
-
-Cleaning up images. Every delete asks for confirmation first.
-
-![Clean up images](docs/images/cleanup.png)
+`scripts/e2e.sh` tests the bundle that `scripts/bundle.sh` built. It launches the app the way macOS does, uses the menu bar through the Accessibility API, opens and closes the window, and checks the state file and screenshots. It needs Accessibility and Screen Recording permission for your terminal and a running Colima instance named `default`. It stops with an error when the screen is locked. It creates an instance named `wk-e2e` for the delete and cleanup checks and deletes it at the end; it stops when an instance with that name already exists. It stops `default` once and starts it again. In `default` it pulls `alpine:latest` if missing and runs a container named `wk-e2e-row`, removing any existing container with that name first and again at the end. It resets wharfkeep's own settings. It changes the login item while it runs.
 
 ## License
 
