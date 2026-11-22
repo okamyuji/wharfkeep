@@ -19,14 +19,17 @@ fail() {
 }
 
 # 自分のコマンド行（パターンを含む）に当たらないよう、実行ファイルのフルパスで完全一致させる。
-daemon_pids() { pgrep -fx "$exe( daemon)?" || true; }
-gui_pids() { pgrep -fx "$exe gui" || true; }
+# パスの「.」などを正規表現の記号として読ませない。
+exe_re=$(printf '%s' "$exe" | sed 's/[][\\.*^$+?(){}|]/\\&/g')
+daemon_pids() { pgrep -fx "$exe_re( daemon)?" || true; }
+gui_pids() { pgrep -fx "$exe_re gui" || true; }
 count() { "$@" | grep -c . || true; }
 # wait_untilに渡す条件。引数で$(...)を渡すと一度だけ展開されて値が固まるので、関数で数え直す。
 daemons_are() { [ "$(count daemon_pids)" -eq "$1" ]; }
 guis_are() { [ "$(count gui_pids)" -eq "$1" ]; }
 
-cleanup() { pkill -f "wharfkeep.app/Contents/MacOS/wharfkeep" || true; }
+# 別の場所に置いたwharfkeep.appを巻き込まないよう、この試験で起動した実行ファイルだけを止める。
+cleanup() { pkill -fx "$exe_re( daemon| gui)?" || true; }
 on_exit() {
   local rc=$?
   cleanup
