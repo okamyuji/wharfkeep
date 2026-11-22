@@ -196,7 +196,7 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// 監視を続ける。周期ごとに状態ファイルを書き、`publish`へ渡す。戻らない。
 pub(crate) async fn run_loop(
-    src: Colima,
+    src: impl InstanceSource,
     state_path: PathBuf,
     wake: Arc<Notify>,
     lang: Lang,
@@ -622,6 +622,110 @@ esac"#,
             .await
             .unwrap();
         assert!(r.contains("cannot run colima"), "{r}");
+    }
+
+    impl InstanceSource for Arc<Fake> {
+        async fn list(&self) -> Result<Vec<Instance>, ColimaError> {
+            Fake::list(self).await
+        }
+        async fn docker_socket(&self, p: &str) -> Result<PathBuf, ColimaError> {
+            Fake::docker_socket(self, p).await
+        }
+    }
+
+    /// `run_loop` を走らせ、`publish` に渡った状態を `check` へ流す。`check` が終われば止める。
+    async fn with_loop<F, Fut>(fake: Arc<Fake>, state: &Path, check: F)
+    where
+        F: FnOnce(Arc<Notify>, mpsc::UnboundedReceiver<Snapshot>) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let wake = Arc::new(Notify::new());
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::select! {
+            () = run_loop(fake, state.to_path_buf(), wake.clone(), Lang::En, move |s| {
+                let _ = tx.send(s);
+            }) => unreachable!("run_loop never returns"),
+            () = check(wake, rx) => {}
+        }
+    }
+
+    async fn next_publish(rx: &mut mpsc::UnboundedReceiver<Snapshot>) -> Snapshot {
+        // INTERVAL（5 秒）より短い待ちで来れば、起こされて読み直したと分かる。
+        tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("published")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_loop_writes_publishes_and_wakes_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state.json");
+        let fake = Arc::new(Fake::new(
+            vec![instance("a", InstanceStatus::Stopped)],
+            Err(ColimaError::InvalidSocket("unused".into())),
+        ));
+        let f = fake.clone();
+        let st = state.clone();
+        with_loop(fake, &state, |wake, mut rx| async move {
+            let first = next_publish(&mut rx).await;
+            assert_eq!(first.instances, [instance("a", InstanceStatus::Stopped)]);
+            assert_eq!(
+                snapshot::read(&st).unwrap().unwrap().instances,
+                first.instances
+            );
+
+            f.set_instances(Ok(vec![instance("b", InstanceStatus::Stopped)]));
+            wake.notify_one();
+            let second = next_publish(&mut rx).await;
+            assert_eq!(second.instances, [instance("b", InstanceStatus::Stopped)]);
+            assert_eq!(
+                snapshot::read(&st).unwrap().unwrap().instances,
+                second.instances
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn run_loop_keeps_last_snapshot_when_list_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state.json");
+        let fake = Arc::new(Fake::new(
+            vec![instance("a", InstanceStatus::Stopped)],
+            Err(ColimaError::InvalidSocket("unused".into())),
+        ));
+        let f = fake.clone();
+        let st = state.clone();
+        with_loop(fake, &state, |wake, mut rx| async move {
+            let first = next_publish(&mut rx).await;
+            f.set_instances(Err(ColimaError::OutputTooLarge));
+            wake.notify_one();
+            let second = next_publish(&mut rx).await;
+            assert_eq!(second.instances, first.instances);
+            assert!(second.updated_at > first.updated_at);
+            assert_eq!(
+                snapshot::read(&st).unwrap().unwrap().updated_at,
+                second.updated_at
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn run_loop_survives_an_unwritable_state_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("no-such-dir").join("state.json");
+        let fake = Arc::new(Fake::new(
+            vec![instance("a", InstanceStatus::Stopped)],
+            Err(ColimaError::InvalidSocket("unused".into())),
+        ));
+        with_loop(fake, &state, |wake, mut rx| async move {
+            next_publish(&mut rx).await;
+            wake.notify_one();
+            next_publish(&mut rx).await;
+        })
+        .await;
     }
 
     #[test]
