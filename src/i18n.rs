@@ -9,13 +9,17 @@ impl Lang {
     /// `WHARFKEEP_LANG`（`en`か`ja`）があればそれを、なければOSの言語を使う。
     pub fn detect() -> Lang {
         let env = std::env::var("WHARFKEEP_LANG").ok();
+        let lang = Lang::resolve(env.as_deref(), sys_locale::get_locale().as_deref());
         if let Some(v) = env.as_deref()
             && !v.is_empty()
             && Lang::parse_override(v).is_none()
         {
-            eprintln!("wharfkeep: WHARFKEEP_LANG={v} は使えません（en か ja）。OSの言語を使います");
+            eprintln!(
+                "wharfkeep: WHARFKEEP_LANG={v}: {}",
+                Msg::LangEnvInvalid.text(lang)
+            );
         }
-        Lang::resolve(env.as_deref(), sys_locale::get_locale().as_deref())
+        lang
     }
 
     fn resolve(env: Option<&str>, locale: Option<&str>) -> Lang {
@@ -51,11 +55,32 @@ pub enum Msg {
     Quit,
     Reload,
     ReloadCount,
+    UnknownSubcommand,
+    NoHomeDir,
+    LockFailed,
+    TrayFailed,
+    OpenWindowFailed,
+    EventLoopCreateFailed,
+    EventLoopStopped,
+    LangEnvInvalid,
 }
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 4] = [Msg::OpenWindow, Msg::Quit, Msg::Reload, Msg::ReloadCount];
+    const ALL: [Msg; 12] = [
+        Msg::OpenWindow,
+        Msg::Quit,
+        Msg::Reload,
+        Msg::ReloadCount,
+        Msg::UnknownSubcommand,
+        Msg::NoHomeDir,
+        Msg::LockFailed,
+        Msg::TrayFailed,
+        Msg::OpenWindowFailed,
+        Msg::EventLoopCreateFailed,
+        Msg::EventLoopStopped,
+        Msg::LangEnvInvalid,
+    ];
 
     pub fn text(self, lang: Lang) -> &'static str {
         match (self, lang) {
@@ -67,6 +92,30 @@ impl Msg {
             (Msg::Reload, Lang::Ja) => "再読み込み",
             (Msg::ReloadCount, Lang::En) => "Reloads:",
             (Msg::ReloadCount, Lang::Ja) => "再読み込みした回数:",
+            (Msg::UnknownSubcommand, Lang::En) => "unknown subcommand (use daemon or gui)",
+            (Msg::UnknownSubcommand, Lang::Ja) => {
+                "不明なサブコマンドです（daemon か gui を指定してください）"
+            }
+            (Msg::NoHomeDir, Lang::En) => {
+                "cannot find the home directory, so the data directory is unknown"
+            }
+            (Msg::NoHomeDir, Lang::Ja) => {
+                "ホームディレクトリが分からないため、データの置き場所を決められません"
+            }
+            (Msg::LockFailed, Lang::En) => "cannot take the lock",
+            (Msg::LockFailed, Lang::Ja) => "ロックを取れません",
+            (Msg::TrayFailed, Lang::En) => "cannot add the menu bar item",
+            (Msg::TrayFailed, Lang::Ja) => "メニューバーに項目を出せません",
+            (Msg::OpenWindowFailed, Lang::En) => "cannot open the window",
+            (Msg::OpenWindowFailed, Lang::Ja) => "ウィンドウを開けません",
+            (Msg::EventLoopCreateFailed, Lang::En) => "cannot create the event loop",
+            (Msg::EventLoopCreateFailed, Lang::Ja) => "イベントループを作れません",
+            (Msg::EventLoopStopped, Lang::En) => "the event loop stopped",
+            (Msg::EventLoopStopped, Lang::Ja) => "イベントループが止まりました",
+            (Msg::LangEnvInvalid, Lang::En) => {
+                "unsupported value (use en or ja); using the OS language"
+            }
+            (Msg::LangEnvInvalid, Lang::Ja) => "使えない値です（en か ja）。OSの言語を使います",
         }
     }
 }

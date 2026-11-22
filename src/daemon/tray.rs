@@ -8,6 +8,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
 struct App {
+    lang: Lang,
     tray: Option<TrayIcon>,
     open: MenuItem,
     quit: MenuItem,
@@ -24,7 +25,7 @@ impl App {
             .with_icon(icon)
             .with_tooltip("wharfkeep")
             .build()
-            .map_err(|e| format!("メニューバーに項目を出せません: {e}"))
+            .map_err(|e| format!("{}: {e}", Msg::TrayFailed.text(self.lang)))
     }
 }
 
@@ -45,7 +46,7 @@ impl ApplicationHandler<MenuEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, ev: MenuEvent) {
         if ev.id == self.open.id() {
             if let Err(e) = launch_gui() {
-                eprintln!("wharfkeep: ウィンドウを開けません: {e}");
+                eprintln!("wharfkeep: {}: {e}", Msg::OpenWindowFailed.text(self.lang));
             }
         } else if ev.id == self.quit.id() {
             event_loop.exit();
@@ -82,9 +83,10 @@ pub fn run() -> Result<(), String> {
         use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
         builder.with_activation_policy(ActivationPolicy::Accessory);
     }
+    let lang = Lang::detect();
     let event_loop = builder
         .build()
-        .map_err(|e| format!("イベントループを作れません: {e}"))?;
+        .map_err(|e| format!("{}: {e}", Msg::EventLoopCreateFailed.text(lang)))?;
     // メニューの操作はイベントとして届けて起こす。定期的に起きて確かめるとアイドル中も電力を使う。
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
@@ -93,15 +95,15 @@ pub fn run() -> Result<(), String> {
     }));
     // アイコンのクリックやホバーは使わない。受け手を置かないと内部の無制限のチャネルに溜まり続ける。
     TrayIconEvent::set_event_handler(Some(|_| {}));
-    let lang = Lang::detect();
     let mut app = App {
+        lang,
         tray: None,
         open: MenuItem::new(Msg::OpenWindow.text(lang), true, None),
         quit: MenuItem::new(Msg::Quit.text(lang), true, None),
     };
     event_loop
         .run_app(&mut app)
-        .map_err(|e| format!("イベントループが止まりました: {e}"))
+        .map_err(|e| format!("{}: {e}", Msg::EventLoopStopped.text(lang)))
 }
 
 #[cfg(test)]
