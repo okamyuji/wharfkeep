@@ -144,13 +144,18 @@ impl SnapshotError {
 /// 同じディレクトリの一時ファイルに書いて fsync し、rename で差し替える。
 /// 親ディレクトリは作らない。
 pub fn write_atomic(path: &Path, s: &Snapshot) -> io::Result<()> {
-    let json = serde_json::to_vec(s).map_err(io::Error::other)?;
+    write_bytes_atomic(path, &serde_json::to_vec(s).map_err(io::Error::other)?)
+}
+
+/// `bytes`を同じディレクトリの一時ファイル（0600）に書いて fsync し、rename で差し替える。
+/// rename は symlink を辿らず、リンクそのものを置き換える。親ディレクトリは作らない。
+pub fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // 同じ名前を二度使わないため pid と連番を入れる。
     let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".{}.{n}.tmp", std::process::id()));
     let tmp = path.with_file_name(name);
-    let result = write_synced(&tmp, &json).and_then(|()| std::fs::rename(&tmp, path));
+    let result = write_synced(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }

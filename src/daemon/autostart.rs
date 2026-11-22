@@ -1,5 +1,6 @@
 //! ログイン時の自動起動。`~/Library/LaunchAgents/wharfkeep.plist`に`wharfkeep daemon`を登録する。
 
+use crate::snapshot::write_bytes_atomic;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -29,7 +30,7 @@ pub fn load_settings(path: &Path) -> Settings {
 }
 
 pub fn save_settings(path: &Path, s: &Settings) -> io::Result<()> {
-    std::fs::write(path, serde_json::to_vec(s).map_err(io::Error::other)?)
+    write_bytes_atomic(path, &serde_json::to_vec(s).map_err(io::Error::other)?)
 }
 
 /// launchdのLaunchAgent。auto-launchは依存にMPL-2.0（option-ext）を含むので使わず、plistを自分で書く。
@@ -60,7 +61,7 @@ impl Autostart {
         if let Some(dir) = self.plist.parent() {
             std::fs::create_dir_all(dir).map_err(io_err)?;
         }
-        std::fs::write(&self.plist, plist_xml(&self.exe)).map_err(io_err)
+        write_bytes_atomic(&self.plist, plist_xml(&self.exe).as_bytes()).map_err(io_err)
     }
 
     pub fn disable(&self) -> Result<(), String> {
@@ -257,6 +258,45 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("none").join("settings.json");
         assert!(save_settings(&path, &Settings::default()).is_err());
+    }
+
+    fn symlinked(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
+        let target = dir.join(format!("{name}.target"));
+        std::fs::write(&target, "keep").unwrap();
+        let link = dir.join(name);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        (target, link)
+    }
+
+    #[test]
+    fn save_settings_replaces_a_symlink_instead_of_writing_through_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (target, link) = symlinked(dir.path(), "settings.json");
+        save_settings(&link, &Settings { autostart: false }).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        assert!(!link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(load_settings(&link), Settings { autostart: false });
+    }
+
+    #[test]
+    fn enable_replaces_a_symlinked_plist_and_writes_it_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (target, link) = symlinked(dir.path(), "wharfkeep.plist");
+        let a = Autostart {
+            exe: PathBuf::from("/usr/bin/true"),
+            plist: link.clone(),
+        };
+        a.enable().unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        let meta = link.symlink_metadata().unwrap();
+        assert!(!meta.file_type().is_symlink());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert!(
+            std::fs::read_to_string(&link)
+                .unwrap()
+                .contains("/usr/bin/true")
+        );
     }
 
     #[test]
