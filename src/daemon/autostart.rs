@@ -120,6 +120,17 @@ const LAUNCHCTL: &str = "/bin/launchctl";
 
 /// `on`なら`exe`でplistを書き直し、launchdに読み込まれていなければ読み込ませる。`on`でなければplistを消し、
 /// デーモンが終わったあとでlaunchdから外す。
+/// `.app` の中の実行ファイルかどうか。
+pub fn in_app_bundle(exe: &Path) -> bool {
+    let mut up = exe.ancestors().skip(1).map(|p| p.file_name());
+    up.next() == Some(Some("MacOS".as_ref()))
+        && up.next() == Some(Some("Contents".as_ref()))
+        && up
+            .next()
+            .flatten()
+            .is_some_and(|n| Path::new(n).extension() == Some("app".as_ref()))
+}
+
 pub fn apply(exe: &Path, on: bool) -> Result<(), String> {
     apply_with(Path::new(LAUNCHCTL), exe, on)
 }
@@ -195,6 +206,20 @@ fn load_into_launchd(launchctl: &Path, plist: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn in_app_bundle_accepts_only_the_bundled_executable() {
+        assert!(super::in_app_bundle(Path::new(
+            "/Applications/wharfkeep.app/Contents/MacOS/wharfkeep"
+        )));
+        assert!(!super::in_app_bundle(Path::new(
+            "/repo/target/debug/wharfkeep"
+        )));
+        assert!(!super::in_app_bundle(Path::new(
+            "/x/wharfkeep.app/wharfkeep"
+        )));
+        assert!(!super::in_app_bundle(Path::new("wharfkeep")));
+    }
+
     use super::*;
 
     #[test]

@@ -125,10 +125,17 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 /// 設定に合わせてログイン時の起動を登録するか外す。失敗しても動き続ける。
+/// `.app` の外（cargo で動かした開発ビルド）からは、登録先を書き換えない。
 fn apply_autostart(on: bool, lang: Lang) {
     let r = std::env::current_exe()
         .map_err(|e| e.to_string())
-        .and_then(|exe| autostart::apply(&exe, on));
+        .and_then(|exe| {
+            if autostart::in_app_bundle(&exe) {
+                autostart::apply(&exe, on)
+            } else {
+                Ok(())
+            }
+        });
     if let Err(e) = r {
         eprintln!("wharfkeep: {}: {e}", Msg::AutostartFailed.text(lang));
     }
