@@ -15,7 +15,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let dir = paths::data_dir();
+    let Some(dir) = paths::data_dir() else {
+        eprintln!(
+            "wharfkeep: ホームディレクトリが分からないため、データの置き場所を決められません"
+        );
+        return ExitCode::FAILURE;
+    };
     let lock = std::fs::create_dir_all(&dir)
         .and_then(|()| InstanceLock::try_acquire(&dir.join(lock_name)));
     let _lock = match lock {

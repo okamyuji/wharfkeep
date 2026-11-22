@@ -4,11 +4,10 @@ use std::path::{Path, PathBuf};
 const EXTRA_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 
 /// アプリのデータを置くディレクトリ（`~/Library/Application Support/work.okamyuji.wharfkeep`）。
-pub fn data_dir() -> PathBuf {
+/// ホームディレクトリが分からなければ`None`。
+pub fn data_dir() -> Option<PathBuf> {
     // directoriesのProjectDirsと同じ場所。directoriesは依存にMPL-2.0（option-ext）を含むので使わない。
-    std::env::home_dir()
-        .expect("ホームディレクトリが分かりません")
-        .join("Library/Application Support/work.okamyuji.wharfkeep")
+    std::env::home_dir().map(|h| h.join("Library/Application Support/work.okamyuji.wharfkeep"))
 }
 
 /// `path_env`（PATHの値）と既知の場所から実行ファイル`name`を探す。
@@ -87,6 +86,10 @@ mod tests {
 
     #[test]
     fn data_dir_ends_with_bundle_id_under_application_support() {
-        assert!(data_dir().ends_with("Library/Application Support/work.okamyuji.wharfkeep"));
+        assert!(
+            data_dir()
+                .unwrap()
+                .ends_with("Library/Application Support/work.okamyuji.wharfkeep")
+        );
     }
 }

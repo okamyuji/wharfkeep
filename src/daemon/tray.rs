@@ -1,15 +1,11 @@
 use crate::gui::launch_gui;
 use crate::i18n::{Lang, Msg};
-use std::time::{Duration, Instant};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
-
-/// メニューの操作を拾う間隔。
-const POLL: Duration = Duration::from_millis(250);
 
 struct App {
     tray: Option<TrayIcon>,
@@ -32,7 +28,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<MenuEvent> for App {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         // macOSはイベントループが動き出してからでないとステータス項目を作れない。
         if cause == StartCause::Init {
@@ -41,21 +37,19 @@ impl ApplicationHandler for App {
                 Err(e) => {
                     eprintln!("wharfkeep: {e}");
                     event_loop.exit();
-                    return;
                 }
             }
         }
-        while let Ok(ev) = MenuEvent::receiver().try_recv() {
-            if ev.id == self.open.id() {
-                if let Err(e) = launch_gui() {
-                    eprintln!("wharfkeep: ウィンドウを開けません: {e}");
-                }
-            } else if ev.id == self.quit.id() {
-                event_loop.exit();
-                return;
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, ev: MenuEvent) {
+        if ev.id == self.open.id() {
+            if let Err(e) = launch_gui() {
+                eprintln!("wharfkeep: ウィンドウを開けません: {e}");
             }
+        } else if ev.id == self.quit.id() {
+            event_loop.exit();
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + POLL));
     }
 
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
@@ -82,7 +76,7 @@ fn icon_rgba(size: u32) -> Vec<u8> {
 /// メニューバーに項目を出し、「終了」が選ばれるまで戻らない。
 pub fn run() -> Result<(), String> {
     #[allow(unused_mut)]
-    let mut builder = EventLoop::builder();
+    let mut builder = EventLoop::with_user_event();
     #[cfg(target_os = "macos")]
     {
         use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
@@ -91,6 +85,14 @@ pub fn run() -> Result<(), String> {
     let event_loop = builder
         .build()
         .map_err(|e| format!("イベントループを作れません: {e}"))?;
+    // メニューの操作はイベントとして届けて起こす。定期的に起きて確かめるとアイドル中も電力を使う。
+    event_loop.set_control_flow(ControlFlow::Wait);
+    let proxy = event_loop.create_proxy();
+    MenuEvent::set_event_handler(Some(move |ev| {
+        let _ = proxy.send_event(ev);
+    }));
+    // アイコンのクリックやホバーは使わない。受け手を置かないと内部の無制限のチャネルに溜まり続ける。
+    TrayIconEvent::set_event_handler(Some(|_| {}));
     let lang = Lang::detect();
     let mut app = App {
         tray: None,
