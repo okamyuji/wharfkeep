@@ -44,7 +44,8 @@ pub fn command_script(argv: &[String], env: &[(String, String)]) -> Result<Strin
     if argv.is_empty() {
         return Err(TerminalError::EmptyArgv);
     }
-    let mut out = String::from("#!/bin/sh\n");
+    // 環境変数の値（トークンなど）を含むので、実行され始めた時点で自分を消す。
+    let mut out = String::from("#!/bin/sh\nrm -f -- \"$0\"\n");
     for (k, v) in env {
         if !is_valid_env_key(k) {
             return Err(TerminalError::InvalidEnvKey(k.clone()));
@@ -52,7 +53,7 @@ pub fn command_script(argv: &[String], env: &[(String, String)]) -> Result<Strin
         out.push_str(&format!("export {k}={}\n", shell_quote(v)));
     }
     let args: Vec<String> = argv.iter().map(|a| shell_quote(a)).collect();
-    out.push_str(&format!("exec {}\n", args.join(" ")));
+    out.push_str(&format!("exec -- {}\n", args.join(" ")));
     Ok(out)
 }
 
@@ -91,6 +92,8 @@ fn write_script_in(dir: &Path, argv: &[String], env: &[(String, String)]) -> io:
     let script =
         command_script(argv, env).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    // mode は新規作成のときだけ効く。以前に緩い権限で作られた dir も締める。
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     remove_stale(dir, SystemTime::now());
     let path = dir.join(unique_name());
     // 0600で作って書き終えてから0700にする。他ユーザーが実行可能な状態を作らない。
@@ -98,6 +101,7 @@ fn write_script_in(dir: &Path, argv: &[String], env: &[(String, String)]) -> io:
         .write(true)
         .create_new(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&path)?;
     file.write_all(script.as_bytes())?;
     drop(file);
@@ -216,7 +220,11 @@ mod tests {
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
         assert_eq!(path.extension().unwrap(), "command");
-        assert!(fs::read_to_string(&path).unwrap().contains("exec 'true'"));
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("exec -- 'true'")
+        );
     }
 
     #[test]
@@ -239,6 +247,56 @@ mod tests {
     fn creates_missing_dir_with_owner_only_mode() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("terminal");
+        write_script_in(&sub, &s(&["true"]), &[]).unwrap();
+        assert_eq!(
+            fs::metadata(&sub).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn argv0_starting_with_dash_is_executed_not_parsed_as_exec_option() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("-x");
+        fs::write(&bin, "#!/bin/sh\nprintf dash-ok\n").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let script = command_script(&s(&["-x"]), &[]).unwrap();
+        let out = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .env("PATH", dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(out.stdout, b"dash-ok");
+    }
+
+    #[test]
+    fn script_removes_itself_before_running_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_script_in(dir.path(), &s(&["true"]), &[]).unwrap();
+        let body = fs::read_to_string(&path).unwrap();
+        assert_eq!(body.lines().nth(1), Some("rm -f -- \"$0\""));
+        let st = Command::new("/bin/sh").arg(&path).status().unwrap();
+        assert!(st.success());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn script_removes_itself_even_when_the_command_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_script_in(dir.path(), &s(&["false"]), &[]).unwrap();
+        let st = Command::new("/bin/sh").arg(&path).status().unwrap();
+        assert_eq!(st.code(), Some(1));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn existing_loose_dir_is_tightened_to_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("terminal");
+        fs::create_dir(&sub).unwrap();
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
         write_script_in(&sub, &s(&["true"]), &[]).unwrap();
         assert_eq!(
             fs::metadata(&sub).unwrap().permissions().mode() & 0o777,
