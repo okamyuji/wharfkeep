@@ -7,11 +7,13 @@ license = "MIT"
 description = "colimaとDockerをメニューバーとウィンドウから扱うmacOSアプリ"
 
 [dependencies]
+bollard = "0.21.1"
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "system_fonts", "wgpu", "wayland", "x11"] }
+futures-util = "0.3.34"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sys-locale = "0.3"
-tokio = { version = "1.54.1", features = ["process", "io-util", "sync", "rt", "macros"] }
+tokio = { version = "1.54.1", features = ["process", "io-util", "sync", "rt", "macros", "net", "time"] }
 tray-icon = "0.26"
 winit = "0.30"
 

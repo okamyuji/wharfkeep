@@ -1,5 +1,6 @@
 pub mod colima;
 pub mod daemon;
+pub mod docker;
 pub mod gui;
 pub mod i18n;
 pub mod lock;

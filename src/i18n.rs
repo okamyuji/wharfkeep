@@ -73,11 +73,14 @@ pub enum Msg {
     ColimaFailed,
     SnapshotIo,
     SnapshotParse,
+    DockerConnect,
+    DockerApi,
+    DockerPort,
 }
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 22] = [
+    const ALL: [Msg; 25] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::Reload,
@@ -100,6 +103,9 @@ impl Msg {
         Msg::ColimaFailed,
         Msg::SnapshotIo,
         Msg::SnapshotParse,
+        Msg::DockerConnect,
+        Msg::DockerApi,
+        Msg::DockerPort,
     ];
 
     pub fn text(self, lang: Lang) -> &'static str {
@@ -160,6 +166,16 @@ impl Msg {
             (Msg::SnapshotIo, Lang::Ja) => "状態ファイルを読めません",
             (Msg::SnapshotParse, Lang::En) => "the state file is not valid",
             (Msg::SnapshotParse, Lang::Ja) => "状態ファイルの形が不正です",
+            (Msg::DockerConnect, Lang::En) => "cannot connect to the docker socket",
+            (Msg::DockerConnect, Lang::Ja) => "docker のソケットに接続できません",
+            (Msg::DockerApi, Lang::En) => "docker returned an error",
+            (Msg::DockerApi, Lang::Ja) => "docker がエラーを返しました",
+            (Msg::DockerPort, Lang::En) => {
+                "invalid port mapping (use HOST:CONTAINER or HOST:CONTAINER/udp, ports 1-65535)"
+            }
+            (Msg::DockerPort, Lang::Ja) => {
+                "ポートの対応が不正です（HOST:CONTAINER か HOST:CONTAINER/udp の形で、ポートは 1〜65535）"
+            }
         }
     }
 }
