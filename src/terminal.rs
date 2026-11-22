@@ -1,0 +1,288 @@
+use std::fmt;
+use std::fs::{self, DirBuilder, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const STALE_AFTER: Duration = Duration::from_secs(24 * 3600);
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TerminalError {
+    EmptyArgv,
+    InvalidEnvKey(String),
+}
+
+impl fmt::Display for TerminalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyArgv => write!(f, "command is empty"),
+            Self::InvalidEnvKey(k) => write!(f, "invalid environment variable name: {k:?}"),
+        }
+    }
+}
+
+impl std::error::Error for TerminalError {}
+
+/// シングルクォートで囲む。`'`は`'\''`に置き換える。
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn is_valid_env_key(k: &str) -> bool {
+    let mut chars = k.chars();
+    chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+/// `export`行と`exec`行を持つシェルスクリプトを作る。
+pub fn command_script(argv: &[String], env: &[(String, String)]) -> Result<String, TerminalError> {
+    if argv.is_empty() {
+        return Err(TerminalError::EmptyArgv);
+    }
+    let mut out = String::from("#!/bin/sh\n");
+    for (k, v) in env {
+        if !is_valid_env_key(k) {
+            return Err(TerminalError::InvalidEnvKey(k.clone()));
+        }
+        out.push_str(&format!("export {k}={}\n", shell_quote(v)));
+    }
+    let args: Vec<String> = argv.iter().map(|a| shell_quote(a)).collect();
+    out.push_str(&format!("exec {}\n", args.join(" ")));
+    Ok(out)
+}
+
+/// 24時間より古い`.command`を消す。1件の失敗でターミナルを開けなくしないので、エラーは無視する。
+fn remove_stale(dir: &Path, now: SystemTime) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "command") {
+            continue;
+        }
+        let age = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| now.duration_since(m).ok());
+        if age.is_some_and(|a| a > STALE_AFTER) {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+fn unique_name() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{nanos}-{n}.command", std::process::id())
+}
+
+/// 引数の検証が先なので、不正な入力ではファイルを作らない。
+fn write_script_in(dir: &Path, argv: &[String], env: &[(String, String)]) -> io::Result<PathBuf> {
+    let script =
+        command_script(argv, env).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    remove_stale(dir, SystemTime::now());
+    let path = dir.join(unique_name());
+    // 0600で作って書き終えてから0700にする。他ユーザーが実行可能な状態を作らない。
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    file.write_all(script.as_bytes())?;
+    drop(file);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+    Ok(path)
+}
+
+/// `.command`を書いて`open`する。`.command`に関連付けられたアプリ（既定はTerminal.app）が実行する。
+pub fn open_in_terminal(argv: &[String], env: &[(String, String)]) -> io::Result<()> {
+    let dir = crate::paths::data_dir()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory is unknown"))?
+        .join("terminal");
+    let path = write_script_in(&dir, argv, env)?;
+    let status = Command::new("open").arg(&path).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("open exited with {status}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use std::time::Duration;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    fn run_sh(script: &str) -> String {
+        let out = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[test]
+    fn quotes_space_quote_and_dollar() {
+        let script = command_script(&s(&["printf", "%s", "a b'c$HOME"]), &[]).unwrap();
+        assert_eq!(run_sh(&script), "a b'c$HOME");
+    }
+
+    #[test]
+    fn exports_env_before_command() {
+        let env = vec![("DOCKER_HOST".to_string(), "unix:///x y".to_string())];
+        let script = command_script(&s(&["sh", "-c", "printf %s \"$DOCKER_HOST\""]), &env).unwrap();
+        assert_eq!(run_sh(&script), "unix:///x y");
+    }
+
+    #[test]
+    fn script_starts_with_shebang() {
+        let script = command_script(&s(&["true"]), &[]).unwrap();
+        assert!(script.starts_with("#!/bin/sh\n"));
+    }
+
+    #[test]
+    fn empty_argv_is_rejected() {
+        assert_eq!(command_script(&[], &[]), Err(TerminalError::EmptyArgv));
+    }
+
+    #[test]
+    fn invalid_env_key_is_rejected() {
+        for key in ["", "1A", "A-B", "A B", "A=B", "A\n"] {
+            let env = vec![(key.to_string(), "v".to_string())];
+            assert_eq!(
+                command_script(&s(&["true"]), &env),
+                Err(TerminalError::InvalidEnvKey(key.to_string())),
+                "{key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_env_keys_are_accepted() {
+        for key in ["A", "_", "a1_B"] {
+            let env = vec![(key.to_string(), "v".to_string())];
+            assert!(command_script(&s(&["true"]), &env).is_ok(), "{key}");
+        }
+    }
+
+    #[test]
+    fn error_messages_name_the_cause() {
+        assert!(TerminalError::EmptyArgv.to_string().contains("empty"));
+        assert!(
+            TerminalError::InvalidEnvKey("1A".into())
+                .to_string()
+                .contains("1A")
+        );
+    }
+
+    #[test]
+    fn script_file_is_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_script_in(dir.path(), &s(&["true"]), &[]).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert_eq!(path.extension().unwrap(), "command");
+        assert!(fs::read_to_string(&path).unwrap().contains("exec 'true'"));
+    }
+
+    #[test]
+    fn written_scripts_have_unique_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = write_script_in(dir.path(), &s(&["true"]), &[]).unwrap();
+        let b = write_script_in(dir.path(), &s(&["true"]), &[]).unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn invalid_input_writes_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = write_script_in(dir.path(), &[], &[]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn creates_missing_dir_with_owner_only_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("terminal");
+        write_script_in(&sub, &s(&["true"]), &[]).unwrap();
+        assert_eq!(
+            fs::metadata(&sub).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    fn touch(dir: &Path, name: &str, now: SystemTime, age: Duration) -> PathBuf {
+        let p = dir.join(name);
+        let f = File::create(&p).unwrap();
+        f.set_modified(now - age).unwrap();
+        p
+    }
+
+    #[test]
+    fn removes_only_command_files_older_than_24h() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let h = |n: u64| Duration::from_secs(n * 3600);
+        let old = touch(dir.path(), "old.command", now, h(25));
+        let edge = touch(dir.path(), "edge.command", now, h(24));
+        let fresh = touch(dir.path(), "fresh.command", now, h(1));
+        let other = touch(dir.path(), "old.txt", now, h(48));
+        remove_stale(dir.path(), now);
+        assert!(!old.exists());
+        assert!(edge.exists());
+        assert!(fresh.exists());
+        assert!(other.exists());
+    }
+
+    #[test]
+    fn stale_removal_failure_does_not_block_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        // 古い.commandという名前のディレクトリはremove_fileで消せない。
+        let stuck = dir.path().join("stuck.command");
+        fs::create_dir(&stuck).unwrap();
+        File::open(&stuck)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(48 * 3600))
+            .unwrap();
+        assert!(write_script_in(dir.path(), &s(&["true"]), &[]).is_ok());
+    }
+
+    #[test]
+    #[ignore = "実際に既定のターミナルを開く"]
+    fn opens_real_terminal() {
+        let marker = format!("wharfkeep-term-test-{}", std::process::id());
+        open_in_terminal(&s(&["sh", "-c", "sleep 30; true", &marker]), &[]).unwrap();
+        std::thread::sleep(Duration::from_secs(5));
+        let out = Command::new("pgrep")
+            .args(["-fl", &marker])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(text.contains(&marker), "pgrep: {text:?}");
+        Command::new("pkill")
+            .args(["-f", &marker])
+            .status()
+            .unwrap();
+    }
+}
