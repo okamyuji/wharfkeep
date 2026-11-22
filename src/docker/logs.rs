@@ -8,6 +8,9 @@ use bollard::container::LogOutput;
 use futures_util::{Stream, StreamExt};
 use std::collections::VecDeque;
 
+/// 1行として持つ最大のバイト数。
+pub const LINE_CAP: usize = 64 * 1024;
+
 /// 塊を受けて、完結した行だけを返す。
 #[derive(Debug, Default)]
 pub struct LineSplitter {
@@ -19,7 +22,7 @@ impl LineSplitter {
         let mut lines = Vec::new();
         let mut rest = chunk;
         while let Some(i) = rest.iter().position(|&b| b == b'\n') {
-            self.buf.extend_from_slice(&rest[..i]);
+            self.extend_capped(&rest[..i]);
             // 切れ目が `\r` と `\n` の間に来ることがあるので、`\r` は行が閉じてから外す。
             if self.buf.last() == Some(&b'\r') {
                 self.buf.pop();
@@ -27,8 +30,14 @@ impl LineSplitter {
             lines.push(String::from_utf8_lossy(&std::mem::take(&mut self.buf)).into_owned());
             rest = &rest[i + 1..];
         }
-        self.buf.extend_from_slice(rest);
+        self.extend_capped(rest);
         lines
+    }
+
+    /// 改行のない出力が続いてもメモリが増え続けないよう、`LINE_CAP`を超えた分は捨てる。
+    fn extend_capped(&mut self, bytes: &[u8]) {
+        let room = LINE_CAP.saturating_sub(self.buf.len());
+        self.buf.extend_from_slice(&bytes[..bytes.len().min(room)]);
     }
 
     /// 改行で終わっていない最後の行。なければ `None`。
@@ -146,6 +155,48 @@ mod tests {
             push_all(&[b"a\nbc", b"d"]),
             (vec!["a".into()], Some("bcd".into()))
         );
+    }
+
+    #[test]
+    fn long_line_is_cut_at_cap_and_next_line_is_intact() {
+        let mut s = LineSplitter::default();
+        let chunk = vec![b'x'; 10 * 1024];
+        let mut lines = Vec::new();
+        for _ in 0..10 {
+            lines.extend(s.push(&chunk));
+            assert!(s.buf.len() <= LINE_CAP, "{}", s.buf.len());
+        }
+        lines.extend(s.push(b"tail\r\nnext\n"));
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), LINE_CAP);
+        assert!(lines[0].bytes().all(|b| b == b'x'));
+        assert_eq!(lines[1], "next");
+    }
+
+    #[test]
+    fn line_of_exactly_cap_bytes_is_kept_whole() {
+        let mut line = vec![b'y'; LINE_CAP];
+        line.push(b'\n');
+        assert_eq!(
+            push_all(&[&line]).0,
+            [String::from_utf8(line[..LINE_CAP].to_vec()).unwrap()]
+        );
+    }
+
+    #[test]
+    fn unterminated_huge_tail_is_capped_at_finish() {
+        let (lines, tail) = push_all(&[&vec![b'z'; LINE_CAP + 5]]);
+        assert!(lines.is_empty());
+        assert_eq!(tail.unwrap().len(), LINE_CAP);
+    }
+
+    #[test]
+    fn cut_line_keeps_crlf_handling_for_following_lines() {
+        let mut s = LineSplitter::default();
+        let mut big = vec![b'a'; LINE_CAP + 1];
+        big.extend_from_slice(b"\r\nb\r\n");
+        assert_eq!(s.push(&big).len(), 2);
+        assert_eq!(s.push(b"c\r\n"), ["c"]);
     }
 
     fn out(b: &'static [u8]) -> Result<LogOutput, bollard::errors::Error> {

@@ -1,6 +1,7 @@
 use crate::i18n::{Lang, Msg};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
@@ -241,11 +242,23 @@ const LINE_LIMIT: usize = 64 * 1024;
 #[derive(Debug, Clone)]
 pub struct Colima {
     bin: PathBuf,
+    /// 子に渡す`PATH`。
+    path_env: OsString,
 }
 
 impl Colima {
     pub fn new(bin: PathBuf) -> Self {
-        Self { bin }
+        // launchdや`open`から起動するとPATHが`/usr/bin:/bin:/usr/sbin:/sbin`だけになり、
+        // colimaが呼ぶlimactlやdockerが見つからない。それらはcolimaと同じ場所に入る。
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let dirs = bin
+            .parent()
+            .filter(|d| d.is_absolute())
+            .map(Path::to_path_buf)
+            .into_iter()
+            .chain(std::env::split_paths(&inherited));
+        let path_env = std::env::join_paths(dirs).unwrap_or(inherited);
+        Self { bin, path_env }
     }
 
     pub async fn list(&self) -> Result<Vec<Instance>, ColimaError> {
@@ -260,6 +273,7 @@ impl Colima {
     async fn capture(&self, args: &[&str]) -> Result<String, ColimaError> {
         let mut child = Command::new(&self.bin)
             .args(args)
+            .env("PATH", &self.path_env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -311,17 +325,20 @@ impl Colima {
     ) {
         let (tx, rx) = mpsc::channel(256);
         let bin = self.bin.clone();
-        (rx, tokio::spawn(stream(bin, args, tx)))
+        let path_env = self.path_env.clone();
+        (rx, tokio::spawn(stream(bin, path_env, args, tx)))
     }
 }
 
 async fn stream(
     bin: PathBuf,
+    path_env: OsString,
     args: Vec<String>,
     tx: mpsc::Sender<String>,
 ) -> Result<ExitStatus, ColimaError> {
     let mut child = Command::new(bin)
         .args(args)
+        .env("PATH", path_env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -700,6 +717,21 @@ mod tests {
         let (mut rx, h) = c.run_streaming(vec![]);
         assert!(rx.recv().await.is_none());
         assert!(matches!(h.await.unwrap(), Err(ColimaError::Spawn(_))));
+    }
+
+    #[tokio::test]
+    async fn children_see_the_binary_dir_first_in_path() {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake(&d, r#"echo "$PATH""#);
+        let prefix = format!("{}:", d.path().display());
+        let inherited = std::env::var("PATH").unwrap();
+        let out = c.capture(&[]).await.unwrap();
+        assert!(out.starts_with(&prefix), "{out}");
+        assert!(out.trim_end().ends_with(&inherited), "{out}");
+        let (mut rx, h) = c.run_streaming(vec![]);
+        let line = rx.recv().await.unwrap();
+        assert!(line.starts_with(&prefix), "{line}");
+        assert!(h.await.unwrap().unwrap().success());
     }
 
     fn fake(dir: &tempfile::TempDir, body: &str) -> Colima {

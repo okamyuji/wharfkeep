@@ -15,8 +15,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sys-locale = "0.3"
 tokio = { version = "1.54.1", features = ["process", "io-util", "sync", "rt", "macros", "net", "time"] }
-tray-icon = "0.26"
 winit = "0.30"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder", "NSMenu", "NSMenuItem", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSCell"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -58,7 +58,7 @@ pub enum Msg {
     UnknownSubcommand,
     NoHomeDir,
     LockFailed,
-    TrayFailed,
+    RuntimeFailed,
     OpenWindowFailed,
     EventLoopCreateFailed,
     EventLoopStopped,
@@ -78,11 +78,24 @@ pub enum Msg {
     DockerConnect,
     DockerApi,
     DockerPort,
+    StartInstance,
+    StopInstance,
+    StartAtLogin,
+    IconError,
+    IconNormal,
+    IconIdle,
+    InstanceNotRunning,
+    DockerEventsEnded,
+    TrayActionFailed,
+    AutostartFailed,
+    SettingsSaveFailed,
+    SnapshotWriteFailed,
+    TempCleanupFailed,
 }
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 27] = [
+    const ALL: [Msg; 40] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::Reload,
@@ -90,7 +103,7 @@ impl Msg {
         Msg::UnknownSubcommand,
         Msg::NoHomeDir,
         Msg::LockFailed,
-        Msg::TrayFailed,
+        Msg::RuntimeFailed,
         Msg::OpenWindowFailed,
         Msg::EventLoopCreateFailed,
         Msg::EventLoopStopped,
@@ -110,6 +123,19 @@ impl Msg {
         Msg::DockerConnect,
         Msg::DockerApi,
         Msg::DockerPort,
+        Msg::StartInstance,
+        Msg::StopInstance,
+        Msg::StartAtLogin,
+        Msg::IconError,
+        Msg::IconNormal,
+        Msg::IconIdle,
+        Msg::InstanceNotRunning,
+        Msg::DockerEventsEnded,
+        Msg::TrayActionFailed,
+        Msg::AutostartFailed,
+        Msg::SettingsSaveFailed,
+        Msg::SnapshotWriteFailed,
+        Msg::TempCleanupFailed,
     ];
 
     pub fn text(self, lang: Lang) -> &'static str {
@@ -134,8 +160,8 @@ impl Msg {
             }
             (Msg::LockFailed, Lang::En) => "cannot take the lock",
             (Msg::LockFailed, Lang::Ja) => "ロックを取れません",
-            (Msg::TrayFailed, Lang::En) => "cannot add the menu bar item",
-            (Msg::TrayFailed, Lang::Ja) => "メニューバーに項目を出せません",
+            (Msg::RuntimeFailed, Lang::En) => "cannot start the monitoring thread",
+            (Msg::RuntimeFailed, Lang::Ja) => "監視のスレッドを始められません",
             (Msg::OpenWindowFailed, Lang::En) => "cannot open the window",
             (Msg::OpenWindowFailed, Lang::Ja) => "ウィンドウを開けません",
             (Msg::EventLoopCreateFailed, Lang::En) => "cannot create the event loop",
@@ -184,6 +210,32 @@ impl Msg {
             (Msg::DockerPort, Lang::Ja) => {
                 "ポートの対応が不正です（HOST:CONTAINER か HOST:CONTAINER/udp の形で、ポートは 1〜65535）"
             }
+            (Msg::StartInstance, Lang::En) => "Start {name}",
+            (Msg::StartInstance, Lang::Ja) => "{name} を起動",
+            (Msg::StopInstance, Lang::En) => "Stop {name}",
+            (Msg::StopInstance, Lang::Ja) => "{name} を停止",
+            (Msg::StartAtLogin, Lang::En) => "Start at Login",
+            (Msg::StartAtLogin, Lang::Ja) => "ログイン時に起動",
+            (Msg::IconError, Lang::En) => "wharfkeep: a container failed",
+            (Msg::IconError, Lang::Ja) => "wharfkeep: 失敗したコンテナがあります",
+            (Msg::IconNormal, Lang::En) => "wharfkeep: running",
+            (Msg::IconNormal, Lang::Ja) => "wharfkeep: 実行中",
+            (Msg::IconIdle, Lang::En) => "wharfkeep: no instance running",
+            (Msg::IconIdle, Lang::Ja) => "wharfkeep: 実行中のインスタンスはありません",
+            (Msg::InstanceNotRunning, Lang::En) => "the instance is not running",
+            (Msg::InstanceNotRunning, Lang::Ja) => "インスタンスが動いていません",
+            (Msg::DockerEventsEnded, Lang::En) => "the docker event stream ended",
+            (Msg::DockerEventsEnded, Lang::Ja) => "docker のイベントの購読が切れました",
+            (Msg::TrayActionFailed, Lang::En) => "the menu action failed",
+            (Msg::TrayActionFailed, Lang::Ja) => "メニューの操作が失敗しました",
+            (Msg::AutostartFailed, Lang::En) => "cannot update the login item",
+            (Msg::AutostartFailed, Lang::Ja) => "ログイン時の起動を設定できません",
+            (Msg::SettingsSaveFailed, Lang::En) => "cannot save the settings",
+            (Msg::SettingsSaveFailed, Lang::Ja) => "設定を保存できません",
+            (Msg::SnapshotWriteFailed, Lang::En) => "cannot write the state file",
+            (Msg::SnapshotWriteFailed, Lang::Ja) => "状態ファイルを書けません",
+            (Msg::TempCleanupFailed, Lang::En) => "cannot remove leftover temporary files",
+            (Msg::TempCleanupFailed, Lang::Ja) => "残った一時ファイルを消せません",
         }
     }
 }
