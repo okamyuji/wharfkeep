@@ -119,8 +119,6 @@ fn xml_escape(s: &str) -> String {
 
 const LAUNCHCTL: &str = "/bin/launchctl";
 
-/// `on`なら`exe`でplistを書き直し、launchdに読み込まれていなければ読み込ませる。`on`でなければplistを消し、
-/// デーモンが終わったあとでlaunchdから外す。
 /// `.app` の中の実行ファイルかどうか。
 pub fn in_app_bundle(exe: &Path) -> bool {
     let mut up = exe.ancestors().skip(1).map(|p| p.file_name());
@@ -132,6 +130,8 @@ pub fn in_app_bundle(exe: &Path) -> bool {
             .is_some_and(|n| Path::new(n).extension() == Some("app".as_ref()))
 }
 
+/// `on`なら`exe`でplistを書き直し、launchdに読み込まれていなければ読み込ませる。`on`でなければplistを消し、
+/// デーモンが終わったあとでlaunchdから外す。
 pub fn apply(exe: &Path, on: bool) -> Result<(), String> {
     apply_with(Path::new(LAUNCHCTL), exe, on)
 }
