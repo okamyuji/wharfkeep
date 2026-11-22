@@ -1,0 +1,15 @@
+# macOS専用のアプリなので、macOSで組み込まれる依存だけを検査する。
+# tray-iconなどがLinuxでだけ使うGTK系の依存は、配布物に入らない。
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
