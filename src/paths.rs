@@ -12,6 +12,7 @@ pub fn data_dir() -> Option<PathBuf> {
 
 /// データ置き場を作り、権限を0700にする。
 /// `DirBuilder`の`mode`は新規作成にしか効かないので、作成済みの場合は`set_permissions`で直す。
+/// 既存のパスがsymlinkなら、参照先の権限を変える。
 pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()
