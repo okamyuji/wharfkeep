@@ -80,7 +80,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          WHARFKEEP_RELEASE=1 scripts/bundle.sh
+          cargo xtask bundle --release
           shown=$(plutil -extract CFBundleShortVersionString raw target/wharfkeep.app/Contents/Info.plist)
           [ "$shown" = "$VERSION" ] || { echo "::error::bundle is $shown, expected $VERSION"; exit 1; }
           arch=$(lipo -archs target/wharfkeep.app/Contents/MacOS/wharfkeep)
