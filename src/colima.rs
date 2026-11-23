@@ -485,16 +485,35 @@ async fn stream(
             s = child.wait() => Some(s.map_err(spawn_err)?),
             () = tokio::time::sleep(OUTPUT_POLL) => None,
         };
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut reader, &mut buf).map_err(spawn_err)?;
-        for l in lines.push(&buf) {
-            let _ = tx.send(l).await;
-        }
+        pump(&mut reader, &mut lines, &tx)
+            .await
+            .map_err(spawn_err)?;
         if let Some(status) = status {
             if let Some(l) = lines.finish() {
                 let _ = tx.send(l).await;
             }
             return Ok(status);
+        }
+    }
+}
+
+/// 1回の読み込みで確保する大きさ。改行なしで大量に出す子でも、メモリは `READ_CHUNK` を超えて増えない。
+const READ_CHUNK: usize = 64 * 1024;
+
+/// 今ある分を `READ_CHUNK` ずつ読み切り、行にして流す。
+async fn pump(
+    reader: &mut impl std::io::Read,
+    lines: &mut LineSplitter,
+    tx: &mpsc::Sender<String>,
+) -> std::io::Result<()> {
+    let mut buf = vec![0u8; READ_CHUNK];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        for l in lines.push(&buf[..n]) {
+            let _ = tx.send(l).await;
         }
     }
 }
@@ -1270,6 +1289,63 @@ esac"#
         let v = stream_lines("head -c 65536 /dev/zero | tr '\\0' x; echo").await;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].len(), 64 * 1024);
+    }
+
+    /// 読み込みの要求の長さを記録する Reader。`data` を先頭から返す。
+    struct Recording<'a> {
+        data: &'a [u8],
+        asked: Vec<usize>,
+    }
+
+    impl std::io::Read for Recording<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.asked.push(buf.len());
+            let n = buf.len().min(self.data.len());
+            buf[..n].copy_from_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            Ok(n)
+        }
+    }
+
+    #[tokio::test]
+    async fn pump_reads_in_chunks_and_keeps_lines_intact() {
+        let mut data = vec![b'x'; 1024 * 1024];
+        data.extend_from_slice(b"\r\nnext\nlast");
+        let mut r = Recording {
+            data: &data,
+            asked: vec![],
+        };
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut lines = LineSplitter::default();
+        pump(&mut r, &mut lines, &tx).await.unwrap();
+        drop(tx);
+        assert!(r.asked.iter().all(|&n| n == READ_CHUNK), "{:?}", r.asked);
+        assert_eq!(r.asked.len(), 1024 / 64 + 2);
+        let first = rx.recv().await.unwrap();
+        assert_eq!(first.len(), LINE_LIMIT);
+        assert_eq!(rx.recv().await.as_deref(), Some("next"));
+        assert!(rx.recv().await.is_none());
+        assert_eq!(lines.finish().as_deref(), Some("last"));
+    }
+
+    #[tokio::test]
+    async fn pump_returns_the_read_error() {
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("boom"))
+            }
+        }
+        let (tx, _rx) = mpsc::channel(1);
+        let e = pump(&mut Broken, &mut LineSplitter::default(), &tx).await;
+        assert_eq!(e.unwrap_err().to_string(), "boom");
+    }
+
+    #[tokio::test]
+    async fn a_megabyte_without_a_newline_arrives_as_one_cut_line() {
+        let v = stream_lines("head -c 1048576 /dev/zero | tr '\\0' x").await;
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].len(), LINE_LIMIT);
     }
 
     #[tokio::test]
