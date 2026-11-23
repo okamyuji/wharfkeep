@@ -402,22 +402,6 @@ mod tests {
     }
 
     #[test]
-    fn zz_repro_alias_names_bypass_exists() {
-        for name in ["colima-old", "OLD"] {
-            let (mut h, mut ends) = harness(Lang::En, two_instances());
-            h.state_mut().0.instances.name = name.into();
-            h.run_steps(4);
-            let disabled = h.get_by_label("Create").accesskit_node().is_disabled();
-            h.get_by_label("Create").click();
-            h.run_steps(4);
-            println!(
-                "REPRO name={name} disabled={disabled} requests={:?}",
-                requests(&mut ends)
-            );
-        }
-    }
-
-    #[test]
     fn create_form_blocks_a_name_that_already_exists() {
         for (lang, create, reason) in [
             (
