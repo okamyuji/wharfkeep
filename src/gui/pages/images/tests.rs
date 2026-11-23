@@ -399,20 +399,32 @@ fn empty_list_says_so() {
 
 #[test]
 fn created_is_shown_as_a_date_in_the_given_offset() {
-    assert_eq!(date_text(1_000, 0), "1970-01-01");
+    assert_eq!(date_text(1_000, 0, Lang::En), "1970-01-01");
     // 2023-11-14 22:13:20 UTC は、日本時間では翌日。
-    assert_eq!(date_text(1_700_000_000, 0), "2023-11-14");
-    assert_eq!(date_text(1_700_000_000, 9 * 3_600), "2023-11-15");
-    assert_eq!(date_text(1_700_000_000, -23 * 3_600), "2023-11-13");
-    assert_eq!(date_text(951_782_400, 0), "2000-02-29");
-    assert_eq!(date_text(951_868_799, 0), "2000-02-29");
-    assert_eq!(date_text(951_868_800, 0), "2000-03-01");
-    assert_eq!(date_text(4_107_542_400, 0), "2100-03-01");
-    assert_eq!(date_text(1_709_164_800, 0), "2024-02-29");
-    assert_eq!(date_text(1_735_603_200, 0), "2024-12-31");
-    // Dockerが作成日時を返さないときは「-」。
-    assert_eq!(date_text(0, 9 * 3_600), "-");
-    assert_eq!(date_text(-1, 0), "-");
+    assert_eq!(date_text(1_700_000_000, 0, Lang::En), "2023-11-14");
+    assert_eq!(date_text(1_700_000_000, 9 * 3_600, Lang::En), "2023-11-15");
+    assert_eq!(
+        date_text(1_700_000_000, -23 * 3_600, Lang::En),
+        "2023-11-13"
+    );
+    assert_eq!(date_text(951_782_400, 0, Lang::En), "2000-02-29");
+    assert_eq!(date_text(951_868_799, 0, Lang::En), "2000-02-29");
+    assert_eq!(date_text(951_868_800, 0, Lang::En), "2000-03-01");
+    assert_eq!(date_text(4_107_542_400, 0, Lang::En), "2100-03-01");
+    assert_eq!(date_text(1_709_164_800, 0, Lang::En), "2024-02-29");
+    assert_eq!(date_text(1_735_603_200, 0, Lang::En), "2024-12-31");
+    // Dockerが作成日時を返さないときは「不明」。1秒目からは日付。
+    assert_eq!(date_text(0, 9 * 3_600, Lang::En), "unknown");
+    assert_eq!(date_text(-1, 0, Lang::Ja), "不明");
+    assert_eq!(date_text(1, 0, Lang::Ja), "1970-01-01");
+}
+
+#[test]
+fn the_row_shows_unknown_when_the_created_date_is_missing() {
+    let mut img = image("sha256:aaaaaaaaaaaabbbb", &["nginx:alpine"], 5);
+    img.created = 0;
+    let (h, _ends) = open(Lang::Ja, images_state(vec![img], vec![], None));
+    h.get_by_label("不明");
 }
 
 #[test]
@@ -442,7 +454,7 @@ fn the_row_shows_the_created_date() {
     let mut img = image("sha256:aaaaaaaaaaaabbbb", &["nginx:alpine"], 5);
     img.created = created;
     let (h, _ends) = open(Lang::En, images_state(vec![img], vec![], None));
-    h.get_by_label(&date_text(created, local_offset(created)));
+    h.get_by_label(&date_text(created, local_offset(created), Lang::En));
 }
 
 fn pulled(id: &str, status: &str, current: Option<u64>, total: Option<u64>) -> PullProgress {

@@ -97,10 +97,10 @@ pub fn in_use(entry: &Entry, containers: &[ContainerRow]) -> bool {
     })
 }
 
-/// 作成日時を`utc_offset`秒ずらした日付（YYYY-MM-DD）。`created`が0以下なら「-」。
-pub fn date_text(created: i64, utc_offset: i64) -> String {
+/// 作成日時を`utc_offset`秒ずらした日付（YYYY-MM-DD）。`created`が0以下なら「不明」。
+pub fn date_text(created: i64, utc_offset: i64, lang: Lang) -> String {
     if created <= 0 {
-        return "-".into();
+        return Msg::Unknown.text(lang).into();
     }
     let (y, m, d) = civil_from_days((created + utc_offset).div_euclid(86_400));
     format!("{y:04}-{m:02}-{d:02}")
@@ -331,7 +331,7 @@ fn row_ui(
     ui.weak(short_id(&entry.image.id));
     ui.label(format_bytes(entry.image.size_bytes));
     let created = entry.image.created;
-    ui.weak(date_text(created, local_offset(created)));
+    ui.weak(date_text(created, local_offset(created), lang));
 }
 
 fn tag_form(ui: &mut egui::Ui, state: &mut GuiState, bridge: &Bridge, lang: Lang, profile: &str) {
