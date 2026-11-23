@@ -265,3 +265,23 @@ fn a_symlinked_script_builds_in_the_repository_it_points_to() {
     assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
     assert!(!links.join("target").exists() && !root.join("target").exists());
 }
+
+#[test]
+fn a_symlink_inside_a_symlinked_directory_resolves_dot_dot_physically() {
+    let s = sandbox(true);
+    let root = s.repo.parent().unwrap().to_path_buf();
+    // a/b/rel の `../..` は物理的には root を指すが、deep/x/lk（= a）を経て字句で畳むと deep/x になる。
+    fs::create_dir_all(root.join("a/b")).unwrap();
+    std::os::unix::fs::symlink("../../Repo/scripts/bundle.sh", root.join("a/b/rel")).unwrap();
+    std::os::unix::fs::symlink("b/rel", root.join("a/mid")).unwrap();
+    fs::create_dir_all(root.join("deep/x")).unwrap();
+    std::os::unix::fs::symlink(root.join("a"), root.join("deep/x/lk")).unwrap();
+
+    let out = s.run_script(
+        &root.join("deep/x/lk/mid"),
+        &root,
+        &[("WHARFKEEP_NO_BUMP", "1")],
+    );
+    assert!(out.status.success(), "bundle.sh: {out:?}");
+    assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
+}

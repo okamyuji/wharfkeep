@@ -13,7 +13,8 @@ while [ -L "$self" ]; do
     *) self=$(dirname -- "$self")/$link ;;
   esac
 done
-CDPATH= cd -- "$(dirname -- "$self")/.."
+# リンクの置き場が symlink でも、`..` を字句でなく物理のパスとして解く。
+CDPATH= cd -P -- "$(dirname -- "$self")/.."
 # [package] の版は行頭の version。依存の version はインラインの表の中なので当たらない。
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
