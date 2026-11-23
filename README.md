@@ -62,7 +62,7 @@ cp -R target/wharfkeep.app /Applications/
 open /Applications/wharfkeep.app
 ```
 
-`scripts/bundle.sh` stamps the bundle with the version in `Cargo.toml`, then raises the patch number in `Cargo.toml` and `Cargo.lock` for the next build. Set `WHARFKEEP_NO_BUMP=1` to build without raising the version.
+`scripts/bundle.sh` stamps the bundle with the version in `Cargo.toml` plus the commit it was built from, such as `0.1.1+local.abc1234` (`.dirty` is added when the working tree has changes). Only release builds carry the bare version, so a local build never looks like a release. After building, the script raises the patch number in `Cargo.toml` and `Cargo.lock` for the next build. Set `WHARFKEEP_NO_BUMP=1` to build without raising the version, for example before `scripts/e2e.sh`.
 
 The first launch registers the app in `/Applications` to start at login. If an older copy is already running, choose **Quit** from its menu bar item before you open the new one.
 

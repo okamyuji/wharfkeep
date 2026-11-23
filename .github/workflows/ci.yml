@@ -79,7 +79,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          WHARFKEEP_NO_BUMP=1 scripts/bundle.sh
+          WHARFKEEP_RELEASE=1 scripts/bundle.sh
           arch=$(lipo -archs target/wharfkeep.app/Contents/MacOS/wharfkeep)
           mkdir -p dist
           ditto -c -k --keepParent target/wharfkeep.app "dist/wharfkeep-$VERSION-macos-$arch.zip"
