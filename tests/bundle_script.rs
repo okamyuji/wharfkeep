@@ -17,19 +17,15 @@ struct Sandbox {
     repo: PathBuf,
 }
 
-/// 利用者の git の設定（署名、未追跡の表示など）と、git の hook が渡す環境変数を読ませない。
+/// 利用者の git の設定（設定ファイルと、GIT_CONFIG_COUNT などの環境経由のもの）と、
+/// git の hook が渡す環境変数を読ませない。
 fn isolate(cmd: &mut Command) -> &mut Command {
-    for k in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_COMMON_DIR",
-        "GIT_CEILING_DIRECTORIES",
-        "GITHUB_ACTIONS",
-        "WHARFKEEP_RELEASE",
-        "WHARFKEEP_NO_BUMP",
-    ] {
+    for (k, _) in std::env::vars_os() {
+        if k.to_string_lossy().starts_with("GIT_") {
+            cmd.env_remove(k);
+        }
+    }
+    for k in ["GITHUB_ACTIONS", "WHARFKEEP_RELEASE", "WHARFKEEP_NO_BUMP"] {
         cmd.env_remove(k);
     }
     cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -209,6 +205,17 @@ fn a_git_dir_from_outside_is_ignored() {
     s.run(&[
         ("WHARFKEEP_NO_BUMP", "1"),
         ("GIT_DIR", git_dir.to_str().unwrap()),
+    ]);
+    assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
+}
+
+#[test]
+fn a_work_tree_from_outside_is_ignored() {
+    let s = sandbox(true);
+    let other = sandbox(true);
+    s.run(&[
+        ("WHARFKEEP_NO_BUMP", "1"),
+        ("GIT_WORK_TREE", other.repo.to_str().unwrap()),
     ]);
     assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
 }
