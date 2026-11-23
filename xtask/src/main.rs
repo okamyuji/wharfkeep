@@ -8,8 +8,7 @@ mod wait;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str =
-    "使い方: cargo xtask <bundle [--no-bump | --release] | install [--local] | uninstall | e2e>";
+const USAGE: &str = "使い方: cargo xtask <bundle [--no-bump | --release] | install [--local] | uninstall | e2e [--front-app <アプリ名>]>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

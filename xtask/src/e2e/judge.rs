@@ -200,6 +200,15 @@ pub fn to_value(value: &str) -> String {
     )
 }
 
+/// `--front-app <名前>`。環境変数を前に付けると、コマンドの先頭で決めるサンドボックスの除外が効かないため、引数で受ける。
+pub fn front_app_arg(args: &[String]) -> Result<Option<String>, String> {
+    match args {
+        [] => Ok(None),
+        [flag, name] if flag == "--front-app" && !name.is_empty() => Ok(Some(name.clone())),
+        _ => Err("使い方: cargo xtask e2e [--front-app <アプリ名>]".into()),
+    }
+}
+
 /// 段を走らせた子プロセスの終了コードから、親の結果を決める。子は失敗の理由を自分で書いている。
 pub fn child_outcome(code: Option<i32>) -> Result<(), String> {
     match code {
@@ -220,6 +229,20 @@ pub fn stop_reason(elapsed: Duration, limit: u64, parent_alive: bool) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn front_app_arg_reads_the_name_and_refuses_anything_else() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(front_app_arg(&a(&[])), Ok(None));
+        assert_eq!(
+            front_app_arg(&a(&["--front-app", "Herdr"])),
+            Ok(Some("Herdr".into()))
+        );
+        assert!(front_app_arg(&a(&["--front-app"])).is_err());
+        assert!(front_app_arg(&a(&["--front-app", ""])).is_err());
+        assert!(front_app_arg(&a(&["--front-app", "Herdr", "x"])).is_err());
+        assert!(front_app_arg(&a(&["--bogus"])).is_err());
+    }
 
     // `entire contents of window "wharfkeep"`の出力を縮めたもの。
     const CONTENTS: &str = "group 1 of window wharfkeep of application process wharfkeep, checkbox Containers of UI element 2 of group 1 of window wharfkeep of application process wharfkeep, UI element Dashboard of UI element 3 of group 1 of window wharfkeep of application process wharfkeep, button Running: 2 of UI element 3 of group 1 of window wharfkeep of application process wharfkeep, checkbox Remove the build cache (1.2 GB) of window 1 of group 1 of window wharfkeep of application process wharfkeep, static text Running of UI element 4 of group 1 of window wharfkeep of application process wharfkeep";

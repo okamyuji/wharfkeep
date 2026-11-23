@@ -65,17 +65,22 @@ struct Ctx {
 const CHILD: &str = "WHARFKEEP_E2E_CHILD";
 
 pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
-    crate::install::no_args(args).and_then(|()| match std::env::var_os(CHILD) {
-        None => supervise(),
+    let front_app = judge::front_app_arg(args)?;
+    match std::env::var_os(CHILD) {
+        None => supervise(front_app),
         Some(_) => run_stages(root),
-    })
+    }
 }
 
 /// 端末のCtrl-Cは前面のプロセスグループに届く。段は別のグループの子で走らせ、
 /// 親が先に終わったら子が後片付けをしてから終わる。
-fn supervise() -> Result<(), String> {
+fn supervise(front_app: Option<String>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("xtask の場所が分かりません: {e}"))?;
-    let status = Command::new(exe)
+    let mut cmd = Command::new(exe);
+    if let Some(app) = front_app {
+        cmd.env("WHARFKEEP_E2E_FRONT_APP", app);
+    }
+    let status = cmd
         .arg("e2e")
         .env(CHILD, "1")
         .process_group(0)
