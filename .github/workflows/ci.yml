@@ -60,7 +60,8 @@ jobs:
           # 404 だけを「無い」とする。ほかの失敗（5xx、rate limit）を「無い」と読むと、古いタグに公開しかねない。
           found() {
             if err=$(gh api "$1" 2>&1 >/dev/null); then return 0; fi
-            case "$err" in *"(HTTP 404)"*) return 1 ;; esac
+            # gh は「gh: <本文の message> (HTTP 404)」、本文が JSON でなければ「gh: HTTP 404」の1行を出す。
+            if [[ $err =~ ^gh:\ (.*\ \(HTTP\ 404\)|HTTP\ 404)$ ]]; then return 1; fi
             echo "::error::GitHub API failed for $1: $err"
             exit 1
           }
@@ -80,6 +81,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           WHARFKEEP_RELEASE=1 scripts/bundle.sh
+          shown=$(plutil -extract CFBundleShortVersionString raw target/wharfkeep.app/Contents/Info.plist)
+          [ "$shown" = "$VERSION" ] || { echo "::error::bundle is $shown, expected $VERSION"; exit 1; }
           arch=$(lipo -archs target/wharfkeep.app/Contents/MacOS/wharfkeep)
           mkdir -p dist
           ditto -c -k --keepParent target/wharfkeep.app "dist/wharfkeep-$VERSION-macos-$arch.zip"
@@ -119,7 +122,8 @@ jobs:
           # 404 だけを「無い」とする。ほかの失敗（5xx、rate limit）を「無い」と読むと、古いタグに公開しかねない。
           found() {
             if err=$(gh api "$1" 2>&1 >/dev/null); then return 0; fi
-            case "$err" in *"(HTTP 404)"*) return 1 ;; esac
+            # gh は「gh: <本文の message> (HTTP 404)」、本文が JSON でなければ「gh: HTTP 404」の1行を出す。
+            if [[ $err =~ ^gh:\ (.*\ \(HTTP\ 404\)|HTTP\ 404)$ ]]; then return 1; fi
             echo "::error::GitHub API failed for $1: $err"
             exit 1
           }

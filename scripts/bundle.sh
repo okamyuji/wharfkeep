@@ -9,21 +9,33 @@ echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
   echo "bundle: Cargo.toml の版 '$version' が X.Y.Z の形ではありません" >&2
   exit 1
 }
+# 印のない版を名乗るのは CI の release だけにする。手元の .app には組んだコミットを
+# semver の build metadata で付け、同じ番号の release と見分けられるようにする。
+# Apple は CFBundleShortVersionString を数字とピリオドだけと定めるが、手元の組み立ては
+# 公開しないので見分けやすさを優先する。CFBundleVersion は macOS が版の比較に使うので数字のままにする。
+if [ "${WHARFKEEP_RELEASE:-0}" = 1 ]; then
+  [ -n "${GITHUB_ACTIONS:-}" ] || {
+    echo "bundle: WHARFKEEP_RELEASE=1 は CI の release だけが使います" >&2
+    exit 1
+  }
+  shown=$version
+else
+  # 外から渡された GIT_DIR や親のリポジトリを読まず、このディレクトリ自身のリポジトリだけを見る。
+  g() { env -u GIT_DIR -u GIT_WORK_TREE git "$@"; }
+  if [ "$(g rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ]; then
+    rev=$(g rev-parse --short HEAD 2>/dev/null || echo unknown)
+    # 組んだあとの版上げだけで dirty にしない。未追跡のファイルは変更に数える。
+    [ -z "$(g status --porcelain -- . ':!Cargo.toml' ':!Cargo.lock')" ] || rev="$rev.dirty"
+  else
+    rev=nogit
+  fi
+  shown="$version+local.$rev"
+fi
 cargo build --release --locked
 app=target/wharfkeep.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp assets/Info.plist "$app/Contents/Info.plist"
-# 印のない版を名乗るのは CI の release だけにする。手元の .app には組んだコミットを
-# semver の build metadata で付け、同じ番号の release と見分けられるようにする。
-# CFBundleVersion は macOS が版の比較に使うので数字のままにする。
-if [ "${WHARFKEEP_RELEASE:-0}" = 1 ]; then
-  shown=$version
-else
-  rev=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-  git diff --quiet HEAD 2>/dev/null || rev="$rev.dirty"
-  shown="$version+local.$rev"
-fi
 for key in CFBundleShortVersionString CFBundleVersion; do
   /usr/libexec/PlistBuddy -c "Delete :$key" "$app/Contents/Info.plist" >/dev/null 2>&1 || true
 done
