@@ -31,6 +31,7 @@ use std::time::Duration;
 
 const STEP: Duration = Duration::from_millis(200);
 const OSA_LIMIT: Duration = Duration::from_secs(10);
+const AX_SEARCH_LIMIT: Duration = Duration::from_secs(30);
 /// 行のボタンの試験に使うコンテナ。colimaのdefaultのソケットを直接指す。
 const ROW: &str = "wk-e2e-row";
 /// 削除と片付け、pullと実行の試験は専用のインスタンスで行う。defaultの利用者のイメージなどを消さないため。

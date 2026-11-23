@@ -84,6 +84,36 @@ fn strip_location(e: &str) -> &str {
     cut.map_or(e, |i| &e[..i])
 }
 
+/// 種類と名前の要素に`verb`を当てるAppleScript。例: `ax_script("click", "button", "Close", "")`。
+/// まずgroup 1の子を順に試す。通知や下のパネルの有無で添字が変わるためで、確認ダイアログ（egui::Modal）は
+/// 子の「window 1」として最後に並ぶ。そこで見つからなければ、ウィンドウの`entire contents`を種類と名前で探す。
+/// 下のパネル（コンテナの詳細）のように、group 1の子のさらに中にある要素のため。
+pub fn ax_script(verb: &str, kind: &str, name: &str, tail: &str) -> String {
+    format!(
+        "set done to false
+repeat with i from 1 to (count UI elements of group 1 of window \"wharfkeep\")
+try
+{verb} {kind} \"{name}\" of UI element i of group 1 of window \"wharfkeep\"{tail}
+set done to true
+exit repeat
+end try
+end repeat
+if not done then
+repeat with e in (entire contents of window \"wharfkeep\")
+try
+set x to contents of e
+if class of x is {kind} and name of x is \"{name}\" then
+{verb} x{tail}
+set done to true
+exit repeat
+end if
+end try
+end repeat
+end if
+if not done then error \"{kind} {name} が見つかりません\""
+    )
+}
+
 /// AXの木の要素を、場所を外した名前の並びにする。`limit`字を超えたら切り詰める。
 pub fn names(contents: &str, limit: usize) -> String {
     let all = elements(contents)
@@ -377,5 +407,27 @@ mod tests {
         assert_eq!(names(c, 37), "button Stop web | static text Running");
         assert_eq!(names("", 10), "");
         assert_eq!(names("ボタン 停止", 3), "ボタン…");
+    }
+
+    #[test]
+    fn ax_script_tries_the_children_then_every_nested_element() {
+        let s = ax_script("click", "button", "Close", "");
+        let direct = s
+            .find("click button \"Close\" of UI element i of group 1")
+            .unwrap();
+        let nested = s
+            .find("if class of x is button and name of x is \"Close\" then\nclick x\n")
+            .unwrap();
+        assert!(direct < nested, "{s}");
+        assert!(s.contains("repeat with e in (entire contents of window \"wharfkeep\")"));
+        assert!(s.ends_with("if not done then error \"button Close が見つかりません\""));
+        let set = ax_script(
+            "set value of",
+            "text field",
+            "Image",
+            " to \"nginx:alpine\"",
+        );
+        assert!(set.contains("set value of text field \"Image\" of UI element i of group 1 of window \"wharfkeep\" to \"nginx:alpine\"\n"));
+        assert!(set.contains("\nset value of x to \"nginx:alpine\"\n"));
     }
 }

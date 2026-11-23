@@ -281,22 +281,42 @@ fn stop_holder(lock: &Path, wait: Duration) -> Result<(), String> {
     if !held(lock) {
         return Ok(());
     }
-    let pid = fs::read_to_string(lock).unwrap_or_default();
-    if let Some(pid) = holder(&pid) {
-        let _ = Command::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
-            .stderr(Stdio::null())
-            .status();
-    }
-    if wait_until(wait, || !held(lock)) {
+    let text = fs::read_to_string(lock).unwrap_or_default();
+    let pid = holder(&text).ok_or_else(|| {
+        format!(
+            "{} の持ち主の pid が読めません: {:?}",
+            lock.display(),
+            text.trim()
+        )
+    })?;
+    let _ = Command::new("/bin/kill")
+        .args(["-TERM", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status();
+    // デーモンはSIGTERMを扱わないので、既定の動きですぐに終わる。待つのはロックでなくそのプロセスにする。
+    // launchdが起こしたデーモンが、空いたロックをすぐに取り直すことがあるため。
+    if wait_until(wait, || !alive(pid)) {
         Ok(())
     } else {
         Err(format!(
-            "{} を持つ wharfkeep（pid {}）が止まりません",
-            lock.display(),
-            pid.trim()
+            "{} を持つ wharfkeep（pid {pid}）が止まりません",
+            lock.display()
         ))
     }
+}
+
+fn alive(pid: u32) -> bool {
+    let out = Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .stderr(Stdio::null())
+        .output();
+    out.is_ok_and(|o| running_stat(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// `ps -o stat=`の値。空（居ない）とZ（終わって回収を待つだけ）は動いていない。
+fn running_stat(stat: &str) -> bool {
+    let s = stat.trim();
+    !s.is_empty() && !s.starts_with('Z')
 }
 
 /// ロックのファイルに書かれたpid。0や負の数を渡すと、killはプロセスグループやすべてのプロセスへ送る。

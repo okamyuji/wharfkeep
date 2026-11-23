@@ -25,6 +25,15 @@ fn no_args_refuses_any_argument() {
 }
 
 #[test]
+fn running_stat_treats_a_zombie_as_ended() {
+    assert!(running_stat("S\n"));
+    assert!(running_stat("Ss+"));
+    assert!(!running_stat("Z"));
+    assert!(!running_stat(" Z+ "));
+    assert!(!running_stat(""));
+}
+
+#[test]
 fn holder_accepts_only_a_positive_pid() {
     assert_eq!(holder("123\n"), Some(123));
     assert_eq!(holder("1"), Some(1));
@@ -381,18 +390,21 @@ fn uninstall_removes_the_app_and_the_login_item_but_keeps_the_data() {
     assert!(e.contains("wharfkeep.plist"), "{e}");
 }
 
-/// ロックを持ったまま眠るperl。`InstanceLock`と同じくflockで取り、pidを書く。
-fn hold_lock(lock: &Path) -> Child {
-    let child = Command::new("/usr/bin/perl")
-        .args([
-            "-e",
-            "use Fcntl qw(:flock); open(my $f, '>>', $ARGV[0]) or die; flock($f, LOCK_EX) or die; truncate($f, 0); syswrite($f, $$); sleep 30;",
-        ])
+/// ロックを取って眠るperl。`InstanceLock`と同じくflockで取り、pidを書く。`prelude`は先に流すperlの文。
+fn spawn_holder(lock: &Path, prelude: &str) -> Child {
+    let script = format!(
+        "{prelude} use Fcntl qw(:flock); open(my $f, '>>', $ARGV[0]) or die; flock($f, LOCK_EX) or die; truncate($f, 0); syswrite($f, $$); sleep 30;"
+    );
+    Command::new("/usr/bin/perl")
+        .args(["-e", &script])
         .arg(lock)
         .spawn()
-        .unwrap();
+        .unwrap()
+}
+
+/// `child`がロックを取ってpidを書くまで待つ。wait_untilは試す対象なので使わない。
+fn until_holds(lock: &Path, child: &Child) {
     let pid = child.id().to_string();
-    // wait_untilは試す対象なので使わない。
     let end = std::time::Instant::now() + Duration::from_secs(10);
     while !(held(lock) && fs::read_to_string(lock).is_ok_and(|s| s == pid)) {
         assert!(
@@ -401,6 +413,25 @@ fn hold_lock(lock: &Path) -> Child {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// 5秒のうちに、正常でない終わり方（信号）で終わったか。終わらなければ止めて偽を返す。
+fn ended_by_signal(child: &mut Child) -> bool {
+    let end = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < end {
+        if let Some(status) = child.try_wait().unwrap() {
+            return !status.success();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    false
+}
+
+fn hold_lock(lock: &Path, prelude: &str) -> Child {
+    let child = spawn_holder(lock, prelude);
+    until_holds(lock, &child);
     child
 }
 
@@ -408,10 +439,10 @@ fn hold_lock(lock: &Path) -> Child {
 fn stop_holder_ends_the_process_that_holds_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let lock = dir.path().join("daemon.lock");
-    let mut child = hold_lock(&lock);
+    let mut child = hold_lock(&lock, "");
     stop_holder(&lock, Duration::from_secs(10)).unwrap();
     assert!(!held(&lock));
-    assert!(!child.wait().unwrap().success());
+    assert!(ended_by_signal(&mut child));
     // ロックが無い、持ち主がいないときは何もしない。
     stop_holder(&dir.path().join("none.lock"), Duration::ZERO).unwrap();
     stop_holder(&lock, Duration::ZERO).unwrap();
@@ -421,11 +452,36 @@ fn stop_holder_ends_the_process_that_holds_the_lock() {
 fn stop_holder_reports_a_holder_that_does_not_end() {
     let dir = tempfile::tempdir().unwrap();
     let lock = dir.path().join("daemon.lock");
-    let mut child = hold_lock(&lock);
-    // 持ち主と違うpidが書かれていると、送った信号は届かない。
-    fs::write(&lock, "999999").unwrap();
+    let mut child = hold_lock(&lock, "$SIG{TERM} = 'IGNORE';");
     let e = stop_holder(&lock, Duration::from_millis(300)).unwrap_err();
     assert!(e.contains("止まりません"), "{e}");
+    assert!(e.contains(&child.id().to_string()), "{e}");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+fn stop_holder_returns_once_the_holder_ends_even_if_another_takes_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock = dir.path().join("daemon.lock");
+    let mut first = hold_lock(&lock, "");
+    // launchdが起こしたデーモンのように、ロックが空くのを待っている次の持ち主。
+    let mut next = spawn_holder(&lock, "");
+    stop_holder(&lock, Duration::from_secs(5)).unwrap();
+    assert!(ended_by_signal(&mut first));
+    until_holds(&lock, &next);
+    next.kill().unwrap();
+    next.wait().unwrap();
+}
+
+#[test]
+fn stop_holder_refuses_a_lock_without_a_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock = dir.path().join("daemon.lock");
+    let mut child = hold_lock(&lock, "");
+    fs::write(&lock, "abc").unwrap();
+    let e = stop_holder(&lock, Duration::from_millis(300)).unwrap_err();
+    assert!(e.contains("pid が読めません"), "{e}");
     child.kill().unwrap();
     child.wait().unwrap();
 }

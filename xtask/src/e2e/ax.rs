@@ -3,19 +3,27 @@ use super::*;
 
 impl Ctx {
     pub(super) fn osa(&self, lines: &[&str]) -> Option<String> {
+        self.osa_within(lines, OSA_LIMIT)
+    }
+
+    fn osa_within(&self, lines: &[&str], limit: Duration) -> Option<String> {
         let mut cmd = Command::new("osascript");
         lines.iter().for_each(|l| {
             cmd.args(["-e", l]);
         });
-        limited(&mut cmd, OSA_LIMIT)
+        limited(&mut cmd, limit)
     }
 
     /// デーモンとGUIは同じプロセス名なので、pidで引いた1つの式で問い合わせる。
     pub(super) fn ax(&self, pid: &str, script: &str) -> Option<String> {
+        self.ax_within(pid, script, OSA_LIMIT)
+    }
+
+    fn ax_within(&self, pid: &str, script: &str, limit: Duration) -> Option<String> {
         let tell = format!(
             "tell application \"System Events\" to tell (first process whose unix id is {pid})"
         );
-        self.osa(&[&tell, script, "end tell"])
+        self.osa_within(&[&tell, script, "end tell"], limit)
     }
 
     /// ほかのアプリが前面を奪うことがあるので、前面にしてから同じスクリプトの中でメニューバーを引く。
@@ -151,41 +159,26 @@ return (x as text) & "," & (y as text) & "," & (w as text) & "," & (h as text)"#
         self.ax(pid, script).unwrap_or_default().trim().to_string()
     }
 
-    /// group 1の子を順に試して`script`を当てる。通知や下のパネルの有無で添字が変わるため。
-    /// 確認ダイアログ（egui::Modal）は子の「window 1」として最後に並ぶ。
-    /// `head`の要素の参照に場所を足し、そのあとに`tail`を続ける。
-    pub(super) fn ax_each(&self, pid: &str, head: &str, tail: &str, what: &str) -> bool {
-        let script = format!(
-            "set done to false
-repeat with i from 1 to (count UI elements of group 1 of window \"wharfkeep\")
-try
-{head} of UI element i of group 1 of window \"wharfkeep\"{tail}
-set done to true
-exit repeat
-end try
-end repeat
-if not done then error \"{what} が見つかりません\""
-        );
-        self.ax(pid, &script).is_some()
+    /// 種類と名前の要素に`verb`を当てる。探し方は`judge::ax_script`。
+    /// 入れ子の奥まで探すと要素の数だけ問い合わせるので、上限を長めにする。
+    fn ax_each(&self, pid: &str, verb: &str, kind: &str, name: &str, tail: &str) -> bool {
+        let script = judge::ax_script(verb, kind, name, tail);
+        self.ax_within(pid, &script, AX_SEARCH_LIMIT).is_some()
     }
 
     /// ウィンドウ内の要素を種類と名前で押す。例: `ax_press(pid, "checkbox", "Containers")`。
     pub(super) fn ax_press(&self, pid: &str, kind: &str, name: &str) -> bool {
-        self.ax_each(
-            pid,
-            &format!("click {kind} \"{name}\""),
-            "",
-            &format!("{kind} {name}"),
-        )
+        self.ax_each(pid, "click", kind, name, "")
     }
 
     /// 名前の付いた入力欄に値を入れる。eguiのTextEditはAccessKitのSetValueを受ける。
     pub(super) fn ax_set(&self, pid: &str, field: &str, value: &str) -> bool {
         self.ax_each(
             pid,
-            &format!("set value of text field \"{field}\""),
+            "set value of",
+            "text field",
+            field,
             &judge::to_value(value),
-            &format!("text field {field}"),
         )
     }
 
