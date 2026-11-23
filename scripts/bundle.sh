@@ -22,7 +22,9 @@ if [ "${WHARFKEEP_RELEASE:-0}" = 1 ]; then
 else
   # 外から渡された GIT_DIR や親のリポジトリを読まず、このディレクトリ自身のリポジトリだけを見る。
   g() { env -u GIT_DIR -u GIT_WORK_TREE git "$@"; }
-  if [ "$(g rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ]; then
+  # 文字列でなく同じディレクトリかで比べる。macOS は大文字小文字の違うパスでも同じ場所を指す。
+  top=$(g rev-parse --show-toplevel 2>/dev/null || true)
+  if [ -n "$top" ] && [ "$top" -ef . ]; then
     rev=$(g rev-parse --short HEAD 2>/dev/null || echo unknown)
     # 組んだあとの版上げだけで dirty にしない。未追跡のファイルは変更に数える。
     [ -z "$(g status --porcelain -- . ':!Cargo.toml' ':!Cargo.lock')" ] || rev="$rev.dirty"
