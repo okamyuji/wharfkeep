@@ -119,10 +119,10 @@ pub fn run_uninstall(args: &[String]) -> Result<(), String> {
     uninstall(&Setup::system()?)
 }
 
-fn no_args(args: &[String]) -> Result<(), String> {
+pub(crate) fn no_args(args: &[String]) -> Result<(), String> {
     match args {
         [] => Ok(()),
-        _ => Err(format!("uninstall は引数を取りません: {args:?}")),
+        _ => Err(format!("この作業は引数を取りません: {args:?}")),
     }
 }
 
@@ -315,14 +315,14 @@ fn print(s: &Setup) -> String {
 }
 
 /// plistの`<key>key</key>`の次にある`<string>`の中身。
-fn string_after<'a>(xml: &'a str, key: &str) -> Option<&'a str> {
+pub(crate) fn string_after<'a>(xml: &'a str, key: &str) -> Option<&'a str> {
     let rest = &xml[xml.find(&format!("<key>{key}</key>"))?..];
     let rest = &rest[rest.find("<string>")? + "<string>".len()..];
     Some(&rest[..rest.find("</string>")?])
 }
 
 /// launchdのジョブ自身の状態。入れ子の`endpoints`などの`state`は見ない。
-fn is_running(print: &str) -> bool {
+pub(crate) fn is_running(print: &str) -> bool {
     print.lines().any(|l| l.trim() == "state = running")
 }
 

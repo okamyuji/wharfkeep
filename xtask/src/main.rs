@@ -1,5 +1,6 @@
 //! 開発用の作業。`cargo xtask <作業>`で動かす。
 mod bundle;
+mod e2e;
 mod install;
 mod version;
 mod wait;
@@ -18,6 +19,7 @@ fn main() -> ExitCode {
             Task::Bundle => bundle::run(&root, rest),
             Task::Install => install::run_install(&root, rest),
             Task::Uninstall => install::run_uninstall(rest),
+            Task::E2e => e2e::run(&root, rest),
         }
     });
     match result {
@@ -34,6 +36,7 @@ enum Task {
     Bundle,
     Install,
     Uninstall,
+    E2e,
 }
 
 /// 作業の名前から選ぶ。試験から実機を書き換える作業へ流れないよう、条件でなく文字列のパターンで選ぶ。
@@ -42,6 +45,7 @@ fn task_of(name: &str) -> Option<Task> {
         "bundle" => Some(Task::Bundle),
         "install" => Some(Task::Install),
         "uninstall" => Some(Task::Uninstall),
+        "e2e" => Some(Task::E2e),
         _ => None,
     }
 }
@@ -65,6 +69,7 @@ mod tests {
         assert_eq!(task_of("bundle"), Some(Task::Bundle));
         assert_eq!(task_of("install"), Some(Task::Install));
         assert_eq!(task_of("uninstall"), Some(Task::Uninstall));
+        assert_eq!(task_of("e2e"), Some(Task::E2e));
         for other in ["", "Bundle", "bogus", "install --local"] {
             assert_eq!(task_of(other), None, "{other}");
         }

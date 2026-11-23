@@ -12,6 +12,18 @@
 # downloadを一時ディレクトリと偽のlaunchctl、open、ghで流す試験で確かめる。
 # holderをSome(0)に替えると`kill -TERM 0`が試験自身のプロセスグループへ届き、mutantsの実行を止める。
 # 0を返さないことはholderの単体試験で確かめる。
+# xtask/src/e2e/のjudge.rs以外は、GUI、osascript、launchctl、colimaを本当に動かすe2eの配線で、試験からは呼べない。
+# 判断（AXの木の文字列の解析、launchctl printの読み取り、待ちの判定、結果の決め方）はe2e/judge.rsとwait.rsに分け、
+# 単体試験で確かめる。
+exclude_globs = [
+  "xtask/src/e2e/ax.rs",
+  "xtask/src/e2e/en.rs",
+  "xtask/src/e2e/mod.rs",
+  "xtask/src/e2e/probe.rs",
+  "xtask/src/e2e/proc.rs",
+  "xtask/src/e2e/resources.rs",
+  "xtask/src/e2e/restore.rs",
+]
 exclude_re = [
   "replace open_in_terminal -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
   "replace raise_running -> bool with",
