@@ -208,12 +208,44 @@ pub struct RenameForm {
     pub new_name: String,
 }
 
+/// Logsを押したときの、追従しない1回きりの取得。行が来たかと、流れが終わったかを覚える。
+/// 追従する流れは終わらないので、ログが無いことは追従しない取得の終わりでしか分からない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogProbe {
+    pub id: String,
+    pub name: String,
+    pub seen: bool,
+    pub ended: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// 1行でもあれば、今までどおり下の欄を開く。
+    Open,
+    /// 1行も無ければ、欄を開かずにダイアログで伝える。
+    NoLogs,
+}
+
+/// 流れが終わった取得を外し、どうするかを決める。終わっていなければ何もしない。
+pub fn settle(probe: &mut Option<LogProbe>) -> Option<(LogProbe, ProbeOutcome)> {
+    let p = probe.take_if(|p| p.ended)?;
+    let outcome = if p.seen {
+        ProbeOutcome::Open
+    } else {
+        ProbeOutcome::NoLogs
+    };
+    Some((p, outcome))
+}
+
 #[derive(Debug, Default)]
 pub struct View {
     pub filter: String,
     pub detail: Option<Detail>,
     pub run: RunForm,
     pub rename: Option<RenameForm>,
+    pub probe: Option<LogProbe>,
+    /// ログが無いと伝えるダイアログのコンテナ名。
+    pub no_logs: Option<String>,
 }
 
 impl View {
@@ -221,20 +253,81 @@ impl View {
     pub fn detail_for(&mut self, id: &str) -> Option<&mut Detail> {
         self.detail.as_mut().filter(|d| d.id == id)
     }
+
+    /// 読んでいる最中の取得が`id`のものであれば返す。
+    pub fn probe_for(&mut self, id: &str) -> Option<&mut LogProbe> {
+        self.probe.as_mut().filter(|p| p.id == id)
+    }
+
+    /// 届いたログの1行。詳細が開いていれば足し、取得の最中なら行があったと覚える。
+    pub fn log_line(&mut self, id: &str, line: String) {
+        if let Some(d) = self.detail_for(id) {
+            d.log.push(line);
+        }
+        if let Some(p) = self.probe_for(id) {
+            p.seen = true;
+        }
+    }
+
+    /// ログの流れが終わった。取得の最中なら、読み終えたと覚える。
+    pub fn logs_ended(&mut self, id: &str) {
+        if let Some(p) = self.probe_for(id) {
+            p.ended = true;
+        }
+    }
+}
+
+/// 詳細を開く前に、今あるログを追従せずに1回読む。
+fn start_probe(state: &mut GuiState, bridge: &Bridge, profile: &str, row: &ContainerRow) {
+    close_detail(state, bridge);
+    state.containers.probe = Some(LogProbe {
+        id: row.id.clone(),
+        name: row.name.clone(),
+        seen: false,
+        ended: false,
+    });
+    bridge.send(Request::Logs {
+        profile: profile.to_string(),
+        id: row.id.clone(),
+        follow: false,
+    });
+}
+
+/// 読み終えた取得に応じて、詳細を開くか、ログが無いと伝える。
+fn settle_probe(state: &mut GuiState, bridge: &Bridge, profile: &str) {
+    match settle(&mut state.containers.probe) {
+        Some((p, ProbeOutcome::Open)) => open_detail(state, bridge, profile, &p.id, &p.name),
+        Some((p, ProbeOutcome::NoLogs)) => state.containers.no_logs = Some(p.name),
+        None => {}
+    }
+}
+
+fn no_logs_dialog(ui: &mut egui::Ui, state: &mut GuiState, lang: Lang) {
+    let Some(name) = &state.containers.no_logs else {
+        return;
+    };
+    let message = Msg::NoLogs.text(lang).replace("{name}", name);
+    let response = egui::Modal::new(egui::Id::unique("wharfkeep-no-logs")).show(ui.ctx(), |ui| {
+        ui.label(message);
+        ui.button(Msg::Close.text(lang)).clicked()
+    });
+    if response.inner || response.should_close() {
+        state.containers.no_logs = None;
+    }
 }
 
 /// 詳細を開く。ログの流れ、inspect、その時点のCPUとメモリを頼む。
-fn open_detail(state: &mut GuiState, bridge: &Bridge, profile: &str, row: &ContainerRow) {
+fn open_detail(state: &mut GuiState, bridge: &Bridge, profile: &str, id: &str, name: &str) {
     close_detail(state, bridge);
     state.containers.detail = Some(Detail {
-        id: row.id.clone(),
-        name: row.name.clone(),
+        id: id.to_string(),
+        name: name.to_string(),
         follow: true,
         log: LogBuffer::default(),
         inspect: None,
         usage: None,
     });
-    let (profile, id) = (profile.to_string(), row.id.clone());
+    let (profile, id) = (profile.to_string(), id.to_string());
     bridge.send(Request::Logs {
         profile: profile.clone(),
         id: id.clone(),
@@ -272,7 +365,7 @@ fn perform(
         return;
     }
     match action {
-        RowAction::Logs => open_detail(state, bridge, profile, row),
+        RowAction::Logs => start_probe(state, bridge, profile, row),
         RowAction::Rename => {
             state.containers.rename = Some(RenameForm {
                 id: row.id.clone(),
@@ -311,6 +404,8 @@ pub fn show(
     profile: &str,
     rows: &[ContainerRow],
 ) {
+    settle_probe(state, bridge, profile);
+    no_logs_dialog(ui, state, lang);
     run_form(ui, state, bridge, lang, profile);
     rename_form(ui, state, bridge, lang, profile);
     ui.add(

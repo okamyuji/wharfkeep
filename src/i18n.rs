@@ -210,11 +210,12 @@ pub enum Msg {
     Untagged,
     DeletedItem,
     ContainerDeleted,
+    NoLogs,
 }
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 151] = [
+    const ALL: [Msg; 152] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::UnknownSubcommand,
@@ -366,6 +367,7 @@ impl Msg {
         Msg::Untagged,
         Msg::DeletedItem,
         Msg::ContainerDeleted,
+        Msg::NoLogs,
     ];
 
     pub fn text(self, lang: Lang) -> &'static str {
@@ -812,6 +814,11 @@ const TEXTS: &[(Msg, &str, &str)] = &[
         Msg::ContainerDeleted,
         "Deleted the container",
         "コンテナを削除しました",
+    ),
+    (
+        Msg::NoLogs,
+        "{name} has no logs to show.",
+        "{name} には表示できるログがありません。",
     ),
 ];
 

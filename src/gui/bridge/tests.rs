@@ -678,6 +678,18 @@ fn a_new_logs_request_replaces_the_old_stream_of_the_same_container() {
 }
 
 #[test]
+fn a_read_that_ends_says_so_after_its_lines() {
+    let e = env(vec![full("/containers/abc1/logs", 200, "")], true);
+    e.bridge.send(Request::Logs {
+        profile: "dev".into(),
+        id: "abc1".into(),
+        follow: false,
+    });
+    assert_eq!(recv(&e.bridge), Reply::LogsEnded { id: "abc1".into() });
+    assert!(has_call(&e, "GET", "follow=false"), "{:?}", seen(&e));
+}
+
+#[test]
 fn logs_failure_is_a_failed_reply() {
     let e = env(vec![], false);
     e.bridge.send(Request::Logs {

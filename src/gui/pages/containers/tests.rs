@@ -354,10 +354,36 @@ fn empty_list_says_so() {
 }
 
 #[test]
-fn logs_button_opens_the_detail_and_asks_for_logs_inspect_and_usage() {
+fn logs_button_first_reads_the_logs_once_without_opening_the_detail() {
     let state = containers_state(vec![row("c1", "web", "running", false)]);
     let (mut h, mut ends) = harness(Lang::En, state);
     h.get_by_label("Logs web").click();
+    h.run_steps(4);
+    assert_eq!(
+        requests(&mut ends),
+        [Request::Logs {
+            profile: "dev".into(),
+            id: "c1".into(),
+            follow: false
+        }]
+    );
+    assert!(h.state().0.containers.detail.is_none());
+    assert!(h.query_by_label("Follow").is_none());
+}
+
+#[test]
+fn logs_with_lines_open_the_detail_and_ask_for_logs_inspect_and_usage() {
+    let state = containers_state(vec![row("c1", "web", "running", false)]);
+    let (mut h, mut ends) = harness(Lang::En, state);
+    h.get_by_label("Logs web").click();
+    h.run_steps(4);
+    requests(&mut ends);
+    let state = &mut h.state_mut().0;
+    state.apply_reply(Reply::LogLine {
+        id: "c1".into(),
+        line: "hello".into(),
+    });
+    state.apply_reply(Reply::LogsEnded { id: "c1".into() });
     h.run_steps(4);
     let sent = requests(&mut ends);
     assert_eq!(
@@ -380,11 +406,92 @@ fn logs_button_opens_the_detail_and_asks_for_logs_inspect_and_usage() {
     );
     let detail = h.state().0.containers.detail.as_ref().unwrap();
     assert_eq!((detail.id.as_str(), detail.follow), ("c1", true));
+    assert!(h.state().0.containers.probe.is_none());
     h.get_by_label("Follow");
     h.get_by_label("Refresh usage");
     h.get_by_label("Close");
 }
 
+#[test]
+fn logs_without_lines_show_a_dialog_instead_of_the_detail() {
+    let state = containers_state(vec![row("c1", "web", "running", false)]);
+    let (mut h, mut ends) = harness(Lang::En, state);
+    h.get_by_label("Logs web").click();
+    h.run_steps(4);
+    requests(&mut ends);
+    h.state_mut()
+        .0
+        .apply_reply(Reply::LogsEnded { id: "c1".into() });
+    h.run_steps(4);
+    assert!(requests(&mut ends).is_empty());
+    assert!(h.state().0.containers.detail.is_none());
+    h.get_by_label("web has no logs to show.");
+    assert!(h.query_by_label("Follow").is_none());
+    h.get_by_label("Close").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("web has no logs to show.").is_none());
+    assert!(h.state().0.containers.no_logs.is_none());
+}
+
+#[test]
+fn the_no_logs_dialog_is_in_japanese_too() {
+    let state = containers_state(vec![row("c1", "web", "running", false)]);
+    let (mut h, _ends) = harness(Lang::Ja, state);
+    h.get_by_label("ログ web").click();
+    h.run_steps(4);
+    h.state_mut()
+        .0
+        .apply_reply(Reply::LogsEnded { id: "c1".into() });
+    h.run_steps(4);
+    h.get_by_label("web には表示できるログがありません。");
+    h.get_by_label("閉じる");
+}
+
+#[test]
+fn the_end_of_another_containers_logs_does_not_settle_the_probe() {
+    let state = containers_state(vec![row("c1", "web", "running", false)]);
+    let (mut h, mut ends) = harness(Lang::En, state);
+    h.get_by_label("Logs web").click();
+    h.run_steps(4);
+    requests(&mut ends);
+    let state = &mut h.state_mut().0;
+    state.apply_reply(Reply::LogLine {
+        id: "other".into(),
+        line: "stray".into(),
+    });
+    state.apply_reply(Reply::LogsEnded { id: "other".into() });
+    h.run_steps(4);
+    let probe = h.state().0.containers.probe.as_ref().unwrap();
+    assert_eq!((probe.seen, probe.ended), (false, false));
+    assert!(h.state().0.containers.no_logs.is_none());
+}
+
+#[test]
+fn settle_decides_only_once_the_read_has_ended() {
+    let probe = |seen, ended| LogProbe {
+        id: "c1".into(),
+        name: "web".into(),
+        seen,
+        ended,
+    };
+    let mut pending = Some(probe(true, false));
+    assert_eq!(settle(&mut pending), None);
+    assert_eq!(pending, Some(probe(true, false)));
+    let mut with_lines = Some(probe(true, true));
+    assert_eq!(
+        settle(&mut with_lines),
+        Some((probe(true, true), ProbeOutcome::Open))
+    );
+    assert_eq!(with_lines, None);
+    let mut empty = Some(probe(false, true));
+    assert_eq!(
+        settle(&mut empty),
+        Some((probe(false, true), ProbeOutcome::NoLogs))
+    );
+    assert_eq!(settle(&mut None), None);
+}
+
+/// Logsを押し、1行あるログを読み終えて詳細を開いたところ。
 fn open_detail_harness() -> (
     egui_kittest::Harness<'static, super::super::test_util::Fixture>,
     WorkerEnds,
@@ -392,6 +499,13 @@ fn open_detail_harness() -> (
     let state = containers_state(vec![row("c1", "web", "running", false)]);
     let (mut h, mut ends) = harness(Lang::En, state);
     h.get_by_label("Logs web").click();
+    h.run_steps(4);
+    let state = &mut h.state_mut().0;
+    state.apply_reply(Reply::LogLine {
+        id: "c1".into(),
+        line: "first".into(),
+    });
+    state.apply_reply(Reply::LogsEnded { id: "c1".into() });
     h.run_steps(4);
     requests(&mut ends);
     (h, ends)
@@ -502,14 +616,27 @@ fn opening_another_detail_stops_the_previous_stream() {
         row("c2", "db", "running", false),
     ]);
     let (mut h, mut ends) = harness(Lang::En, state);
+    let read = |h: &mut egui_kittest::Harness<'static, super::super::test_util::Fixture>,
+                id: &str| {
+        let state = &mut h.state_mut().0;
+        state.apply_reply(Reply::LogLine {
+            id: id.into(),
+            line: "x".into(),
+        });
+        state.apply_reply(Reply::LogsEnded { id: id.into() });
+        h.run_steps(4);
+    };
     h.get_by_label("Logs web").click();
     h.run_steps(4);
+    read(&mut h, "c1");
     requests(&mut ends);
     h.get_by_label("Logs db").click();
     h.run_steps(4);
     let sent = requests(&mut ends);
     assert_eq!(sent[0], Request::StopLogs { id: "c1".into() });
-    assert!(matches!(&sent[1], Request::Logs { id, .. } if id == "c2"));
+    assert!(matches!(&sent[1], Request::Logs { id, follow: false, .. } if id == "c2"));
+    assert!(h.state().0.containers.detail.is_none());
+    read(&mut h, "c2");
     assert_eq!(h.state().0.containers.detail.as_ref().unwrap().id, "c2");
 }
 

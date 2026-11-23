@@ -244,6 +244,10 @@ pub enum Reply {
         id: String,
         line: String,
     },
+    /// ログの流れが誤りなく終わった。追従しない取得なら、今あるログを読み終えた。
+    LogsEnded {
+        id: String,
+    },
     /// 失敗ではない知らせ。片付けで空いた量など。
     Notice(String),
     PullProgress {
@@ -389,6 +393,7 @@ async fn stream_logs(cx: Arc<Cx>, profile: String, id: String, follow: bool) {
             Err(e) => return cx.send(Reply::Failed(e.message(cx.lang))),
         }
     }
+    cx.send(Reply::LogsEnded { id });
 }
 
 /// 接続して`f`を走らせる。ソケットの取得、接続、操作のどれが失敗しても、文言にして返す。

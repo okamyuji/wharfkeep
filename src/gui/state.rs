@@ -202,11 +202,8 @@ impl GuiState {
                     d.usage = Some(usage);
                 }
             }
-            Reply::LogLine { id, line } => {
-                if let Some(d) = self.containers.detail_for(&id) {
-                    d.log.push(line);
-                }
-            }
+            Reply::LogLine { id, line } => self.containers.log_line(&id, line),
+            Reply::LogsEnded { id } => self.containers.logs_ended(&id),
         }
     }
 
