@@ -26,8 +26,8 @@ else
   top=$(g rev-parse --show-toplevel 2>/dev/null || true)
   if [ -n "$top" ] && [ "$top" -ef . ]; then
     rev=$(g rev-parse --short HEAD 2>/dev/null || echo unknown)
-    # 組んだあとの版上げだけで dirty にしない。未追跡のファイルは変更に数える。
-    [ -z "$(g status --porcelain -- . ':!Cargo.toml' ':!Cargo.lock')" ] || rev="$rev.dirty"
+    # 組んだあとの版上げだけで dirty にしない。未追跡のファイルは、git の設定によらず変更に数える。
+    [ -z "$(g status --porcelain --untracked-files=normal -- . ':!Cargo.toml' ':!Cargo.lock')" ] || rev="$rev.dirty"
   else
     rev=nogit
   fi
