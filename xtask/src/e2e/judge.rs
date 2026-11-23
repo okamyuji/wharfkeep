@@ -85,33 +85,47 @@ fn strip_location(e: &str) -> &str {
 }
 
 /// 種類と名前の要素に`verb`を当てるAppleScript。例: `ax_script("click", "button", "Close", "")`。
-/// まずgroup 1の子を順に試す。通知や下のパネルの有無で添字が変わるためで、確認ダイアログ（egui::Modal）は
-/// 子の「window 1」として最後に並ぶ。そこで見つからなければ、ウィンドウの`entire contents`を種類と名前で探す。
-/// 下のパネル（コンテナの詳細）のように、group 1の子のさらに中にある要素のため。
+/// group 1の子（a）と、その子（b）の2段を順に試す。通知や下のパネルの有無で添字が変わるためで、
+/// 確認ダイアログ（egui::Modal）はaの「window 1」に、コンテナの詳細の欄のボタンはbの中に並ぶ。
+/// `entire contents`はリストを返し、`whose`で絞れない。1つずつ調べると要素ごとに問い合わせが走り、
+/// ログの行が多いと時間が足りないので使わない。
 pub fn ax_script(verb: &str, kind: &str, name: &str, tail: &str) -> String {
     format!(
         "set done to false
-repeat with i from 1 to (count UI elements of group 1 of window \"wharfkeep\")
+repeat with a in (UI elements of group 1 of window \"wharfkeep\")
+set a to contents of a
 try
-{verb} {kind} \"{name}\" of UI element i of group 1 of window \"wharfkeep\"{tail}
+{verb} {kind} \"{name}\" of a{tail}
 set done to true
-exit repeat
 end try
-end repeat
-if not done then
-repeat with e in (entire contents of window \"wharfkeep\")
+if done then exit repeat
+repeat with b in (UI elements of a)
+set b to contents of b
 try
-set x to contents of e
-if class of x is {kind} and name of x is \"{name}\" then
-{verb} x{tail}
+{verb} {kind} \"{name}\" of b{tail}
 set done to true
-exit repeat
-end if
 end try
+if done then exit repeat
 end repeat
-end if
+if done then exit repeat
+end repeat
 if not done then error \"{kind} {name} が見つかりません\""
     )
+}
+
+/// osascriptなどを上限つきで走らせた結果。`stdout`がNoneなら上限までに終わらなかった。
+pub fn osa_result(
+    stdout: Option<String>,
+    code: Option<i32>,
+    stderr: &str,
+    limit: Duration,
+) -> Result<String, String> {
+    match (stdout, code) {
+        (None, _) => Err(format!("{} 秒で終わらず止めました", limit.as_secs())),
+        (Some(out), Some(0)) => Ok(out),
+        (Some(_), Some(n)) => Err(format!("終了コード {n}: {}", stderr.trim())),
+        (Some(_), None) => Err(format!("シグナルで終わりました: {}", stderr.trim())),
+    }
 }
 
 /// AXの木の要素を、場所を外した名前の並びにする。`limit`字を超えたら切り詰める。
@@ -410,16 +424,14 @@ mod tests {
     }
 
     #[test]
-    fn ax_script_tries_the_children_then_every_nested_element() {
+    fn ax_script_tries_two_levels_below_group_1() {
         let s = ax_script("click", "button", "Close", "");
-        let direct = s
-            .find("click button \"Close\" of UI element i of group 1")
-            .unwrap();
-        let nested = s
-            .find("if class of x is button and name of x is \"Close\" then\nclick x\n")
-            .unwrap();
-        assert!(direct < nested, "{s}");
-        assert!(s.contains("repeat with e in (entire contents of window \"wharfkeep\")"));
+        let first = s.find("click button \"Close\" of a\n").unwrap();
+        let second = s.find("click button \"Close\" of b\n").unwrap();
+        assert!(first < second, "{s}");
+        assert!(s.contains("repeat with a in (UI elements of group 1 of window \"wharfkeep\")"));
+        assert!(s.contains("repeat with b in (UI elements of a)"));
+        assert!(!s.contains("entire contents"));
         assert!(s.ends_with("if not done then error \"button Close が見つかりません\""));
         let set = ax_script(
             "set value of",
@@ -427,7 +439,33 @@ mod tests {
             "Image",
             " to \"nginx:alpine\"",
         );
-        assert!(set.contains("set value of text field \"Image\" of UI element i of group 1 of window \"wharfkeep\" to \"nginx:alpine\"\n"));
-        assert!(set.contains("\nset value of x to \"nginx:alpine\"\n"));
+        assert!(set.contains("set value of text field \"Image\" of a to \"nginx:alpine\"\n"));
+        assert!(set.contains("set value of text field \"Image\" of b to \"nginx:alpine\"\n"));
+    }
+
+    #[test]
+    fn osa_result_names_the_timeout_the_exit_code_and_stderr() {
+        let limit = Duration::from_secs(30);
+        assert_eq!(
+            osa_result(Some("x".into()), Some(0), "", limit),
+            Ok("x".into())
+        );
+        assert_eq!(
+            osa_result(None, None, "", limit),
+            Err("30 秒で終わらず止めました".into())
+        );
+        assert_eq!(
+            osa_result(
+                Some(String::new()),
+                Some(1),
+                "execution error: -1719\n",
+                limit
+            ),
+            Err("終了コード 1: execution error: -1719".into())
+        );
+        assert_eq!(
+            osa_result(Some(String::new()), None, " gone ", limit),
+            Err("シグナルで終わりました: gone".into())
+        );
     }
 }

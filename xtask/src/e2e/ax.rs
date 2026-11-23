@@ -3,27 +3,19 @@ use super::*;
 
 impl Ctx {
     pub(super) fn osa(&self, lines: &[&str]) -> Option<String> {
-        self.osa_within(lines, OSA_LIMIT)
-    }
-
-    fn osa_within(&self, lines: &[&str], limit: Duration) -> Option<String> {
         let mut cmd = Command::new("osascript");
         lines.iter().for_each(|l| {
             cmd.args(["-e", l]);
         });
-        limited(&mut cmd, limit)
+        limited(&mut cmd, OSA_LIMIT)
     }
 
     /// デーモンとGUIは同じプロセス名なので、pidで引いた1つの式で問い合わせる。
     pub(super) fn ax(&self, pid: &str, script: &str) -> Option<String> {
-        self.ax_within(pid, script, OSA_LIMIT)
-    }
-
-    fn ax_within(&self, pid: &str, script: &str, limit: Duration) -> Option<String> {
         let tell = format!(
             "tell application \"System Events\" to tell (first process whose unix id is {pid})"
         );
-        self.osa_within(&[&tell, script, "end tell"], limit)
+        self.osa(&[&tell, script, "end tell"])
     }
 
     /// ほかのアプリが前面を奪うことがあるので、前面にしてから同じスクリプトの中でメニューバーを引く。
@@ -160,33 +152,53 @@ return (x as text) & "," & (y as text) & "," & (w as text) & "," & (h as text)"#
     }
 
     /// 種類と名前の要素に`verb`を当てる。探し方は`judge::ax_script`。
-    /// 入れ子の奥まで探すと要素の数だけ問い合わせるので、上限を長めにする。
-    fn ax_each(&self, pid: &str, verb: &str, kind: &str, name: &str, tail: &str) -> bool {
+    /// 失敗したときは、osascriptの終了コードとstderrを返す。
+    fn ax_each(
+        &self,
+        pid: &str,
+        verb: &str,
+        kind: &str,
+        name: &str,
+        tail: &str,
+    ) -> Result<(), String> {
+        let tell = format!(
+            "tell application \"System Events\" to tell (first process whose unix id is {pid})"
+        );
         let script = judge::ax_script(verb, kind, name, tail);
-        self.ax_within(pid, &script, AX_SEARCH_LIMIT).is_some()
+        let mut cmd = Command::new("osascript");
+        cmd.args(["-e", &tell, "-e", &script, "-e", "end tell"]);
+        run_limited(&mut cmd, AX_SEARCH_LIMIT).map(drop)
     }
 
     /// ウィンドウ内の要素を種類と名前で押す。例: `ax_press(pid, "checkbox", "Containers")`。
-    pub(super) fn ax_press(&self, pid: &str, kind: &str, name: &str) -> bool {
+    pub(super) fn ax_press(&self, pid: &str, kind: &str, name: &str) -> Result<(), String> {
         self.ax_each(pid, "click", kind, name, "")
     }
 
+    pub(super) fn press(&self, pid: &str, kind: &str, name: &str) {
+        if let Err(e) = self.ax_press(pid, kind, name) {
+            self.fail(&format!(
+                "「{name}」を押せません（{e}）。{}",
+                self.tree(pid)
+            ));
+        }
+    }
+
     /// 名前の付いた入力欄に値を入れる。eguiのTextEditはAccessKitのSetValueを受ける。
-    pub(super) fn ax_set(&self, pid: &str, field: &str, value: &str) -> bool {
-        self.ax_each(
+    pub(super) fn set_field(&self, pid: &str, field: &str, value: &str) {
+        let set = self.ax_each(
             pid,
             "set value of",
             "text field",
             field,
             &judge::to_value(value),
-        )
-    }
-
-    pub(super) fn press(&self, pid: &str, kind: &str, name: &str) {
-        let pressed = self.ax_press(pid, kind, name);
-        self.need(pressed, || {
-            format!("「{name}」を押せません。{}", self.tree(pid))
-        });
+        );
+        if let Err(e) = set {
+            self.fail(&format!(
+                "入力欄「{field}」に書けません（{e}）。{}",
+                self.tree(pid)
+            ));
+        }
     }
 
     pub(super) fn front_pid(&self) -> String {

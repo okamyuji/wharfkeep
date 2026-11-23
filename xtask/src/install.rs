@@ -305,18 +305,13 @@ fn stop_holder(lock: &Path, wait: Duration) -> Result<(), String> {
     }
 }
 
+/// `kill -0`が通れば居る。ゾンビにも通るが、デーモンはxtaskの子ではないので回収待ちで残らない。
 fn alive(pid: u32) -> bool {
-    let out = Command::new("/bin/ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
         .stderr(Stdio::null())
-        .output();
-    out.is_ok_and(|o| running_stat(&String::from_utf8_lossy(&o.stdout)))
-}
-
-/// `ps -o stat=`の値。空（居ない）とZ（終わって回収を待つだけ）は動いていない。
-fn running_stat(stat: &str) -> bool {
-    let s = stat.trim();
-    !s.is_empty() && !s.starts_with('Z')
+        .status()
+        .is_ok_and(|st| st.success())
 }
 
 /// ロックのファイルに書かれたpid。0や負の数を渡すと、killはプロセスグループやすべてのプロセスへ送る。

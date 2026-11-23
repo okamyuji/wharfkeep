@@ -391,9 +391,7 @@ impl Ctx {
             "button Pull",
             "イメージ画面に「Pull」がありません",
         );
-        self.need(self.ax_set(&gpid, "Pull an image", WEB_IMAGE), || {
-            "pull の入力欄に書けません".into()
-        });
+        self.set_field(&gpid, "Pull an image", WEB_IMAGE);
         self.press(&gpid, "button", "Pull");
         let pulled = self.wait(300, || self.dki_ok(&["image", "inspect", WEB_IMAGE]));
         self.need(pulled, || format!("GUIから {WEB_IMAGE} を pull できません"));
@@ -443,9 +441,7 @@ impl Ctx {
             ("Name", WEB),
             ("Ports (for example 8080:80, 5353:53/udp)", "8080:80"),
         ] {
-            self.need(self.ax_set(gpid, field, value), || {
-                format!("入力欄「{field}」に書けません")
-            });
+            self.set_field(gpid, field, value);
         }
         self.shot_window("en-10b-run-form", gpid);
         self.press(gpid, "button", "Run");

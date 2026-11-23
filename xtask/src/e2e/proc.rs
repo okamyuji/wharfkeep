@@ -61,20 +61,27 @@ pub(super) fn jq_input(args: &[&str], input: &str) -> bool {
 
 /// `limit`を過ぎたら止める。成功したときの標準出力。出力を読みながら待つので、大きなAXの木でも詰まらない。
 pub(super) fn limited(cmd: &mut Command, limit: Duration) -> Option<String> {
+    run_limited(cmd, limit).ok()
+}
+
+/// `limited`と同じく走らせ、失敗したときは終了コードとstderrを返す。
+pub(super) fn run_limited(cmd: &mut Command, limit: Duration) -> Result<String, String> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .ok()?;
-    let rx = read_all(child.stdout.take());
-    let out = rx.recv_timeout(limit).ok();
+        .map_err(|e| format!("{:?} を起動できません: {e}", cmd.get_program()))?;
+    let out = read_all(child.stdout.take());
+    let err = read_all(child.stderr.take());
+    let stdout = out.recv_timeout(limit).ok();
     let _ = child.kill();
-    let success = child.wait().is_ok_and(|s| s.success());
-    out.filter(|_| success)
+    let code = child.wait().ok().and_then(|s| s.code());
+    let stderr = err.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
+    judge::osa_result(stdout, code, &stderr, limit)
 }
 
-pub(super) fn read_all(pipe: Option<ChildStdout>) -> mpsc::Receiver<String> {
+pub(super) fn read_all<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut s = String::new();
