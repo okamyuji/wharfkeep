@@ -490,31 +490,16 @@ impl Ctx {
         self.say(&format!(
             "(10) シェルを開き、外部ターミナルの docker exec pid={pid} を見つけた"
         ));
-        self.close_terminal(&pid);
+        self.end_shell(&pid);
     }
 
-    /// docker execを止めてから、そのttyのTerminal.appのウィンドウを閉じる。止める前に閉じると確認が出る。
-    pub(super) fn close_terminal(&self, pid: &str) {
-        let tty = judge::tty_path(&stdout(Command::new("ps").args(["-o", "tty=", "-p", pid])));
+    /// 外部ターミナルで開いたシェルを止める。どのターミナルが`.command`を開いても通るよう、
+    /// ターミナルのアプリやウィンドウには触らず、`docker exec`のプロセスだけを止める。
+    pub(super) fn end_shell(&self, pid: &str) {
         let _ = ok(Command::new("kill").arg(pid));
         let ended = self.wait(10, || !ok(Command::new("kill").args(["-0", pid])));
         self.need(ended, || format!("docker exec pid={pid} が終わりません"));
-        let Some(tty) = tty else {
-            return eprintln!(
-                "e2e: 警告: docker exec に端末が無いので、ターミナルのウィンドウは閉じません"
-            );
-        };
-        let script = format!(
-            "if application \"Terminal\" is running then
-tell application \"Terminal\"
-repeat with w in (every window)
-if (tty of every tab of w) contains \"{tty}\" then close w
-end repeat
-end tell
-end if"
-        );
-        let _ = self.osa(&[&script]);
-        self.say(&format!("(10) {tty} のターミナルを閉じた"));
+        self.say(&format!("(10) シェルの docker exec pid={pid} を止めた"));
     }
 
     /// 日本語の文言が描けることを確かめる。メニューバーの流れは上で確かめたのでGUIだけを開く。

@@ -91,6 +91,8 @@ The app bundle runs the daemon by default. You can also run each part from a ter
 
 In the window you can run and rename containers, create and delete instances, and delete or clean up images, volumes, networks and the build cache. Every delete asks for confirmation first.
 
+In the container list, **Logs** shows the container's log in a panel at the bottom of the window. When the container has written no log yet, a dialog says so and the panel stays closed. **Shell** runs `sh` in the container in your default terminal app, the app that opens `.command` files (Terminal unless you chose another).
+
 Only one daemon and one window run at a time. A binary run from outside an app bundle, such as `target/debug/wharfkeep`, leaves the login item unchanged.
 
 ### Configuration
@@ -113,9 +115,9 @@ cargo fmt --check
 cargo deny check licenses
 ```
 
-Tests that need a running Colima instance or open a Terminal window are ignored by default. Run them with `cargo test -- --ignored`.
+Tests that need a running Colima instance or open your terminal app are ignored by default. Run them with `cargo test -- --ignored`.
 
-`cargo xtask e2e` tests the bundle that `cargo xtask bundle --no-bump` built. It launches the app the way macOS does, uses the menu bar through the Accessibility API, opens and closes the window, and checks the state file and screenshots. It needs Accessibility and Screen Recording permission for your terminal and a running Colima instance named `default`. It stops with an error when the screen is locked or when port 8080 is in use. It creates an instance named `wk-e2e` for the delete and cleanup checks and deletes it at the end; it stops when an instance with that name already exists. In `wk-e2e` it pulls `nginx:alpine` from the window, runs it as `wk-e2e-web` with port `8080:80`, checks that `localhost:8080` answers 200, opens its logs and a shell in the terminal app (closing that Terminal window afterwards), and deletes the container. It stops `default` once and starts it again. In `default` it pulls `alpine:latest` if missing and runs a container named `wk-e2e-row`, removing any existing container with that name first and again at the end. It resets wharfkeep's own settings. It changes the login item while it runs; at the end, if `/Applications/wharfkeep.app` exists, it starts that app once so that the login item points to it again. `E2E_LIMIT` sets the overall time limit in seconds (1500 by default), and `WHARFKEEP_E2E_FRONT_APP` names the app on the external display that it brings to the front before it uses the menu bar (Zed by default).
+`cargo xtask e2e` tests the bundle that `cargo xtask bundle --no-bump` built. It launches the app the way macOS does, uses the menu bar through the Accessibility API, opens and closes the window, and checks the state file and screenshots. It needs Accessibility and Screen Recording permission for your terminal and a running Colima instance named `default`. It stops with an error when the screen is locked or when port 8080 is in use. It creates an instance named `wk-e2e` for the delete and cleanup checks and deletes it at the end; it stops when an instance with that name already exists. In `wk-e2e` it pulls `nginx:alpine` from the window, runs it as `wk-e2e-web` with port `8080:80`, checks that `localhost:8080` answers 200, opens its logs, opens a shell in your default terminal app and then stops that `docker exec` process (the terminal app itself is left alone), and deletes the container. It stops `default` once and starts it again. In `default` it pulls `alpine:latest` if missing and runs a container named `wk-e2e-row`, removing any existing container with that name first and again at the end. It resets wharfkeep's own settings. It changes the login item while it runs; at the end, if `/Applications/wharfkeep.app` exists, it starts that app once so that the login item points to it again. `E2E_LIMIT` sets the overall time limit in seconds (1500 by default), and `WHARFKEEP_E2E_FRONT_APP` names the app on the external display that it brings to the front before it uses the menu bar (Zed by default).
 
 ## License
 

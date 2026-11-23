@@ -183,12 +183,6 @@ pub fn shell_pattern(id: &str) -> String {
     format!("exec -it {short}[0-9a-f]* sh$")
 }
 
-/// `ps -o tty=`の値をTerminal.appのタブの`tty`の形にする。端末が無ければNone。
-pub fn tty_path(ps: &str) -> Option<String> {
-    let t = ps.trim();
-    (!t.is_empty() && t != "??").then(|| format!("/dev/{t}"))
-}
-
 /// 段を終えたか（`done`）と、後片付けでログイン時の起動先を戻せたか（`restored`）から、結果を決める。
 pub fn outcome(done: bool, restored: bool, stage: &str) -> Result<&'static str, String> {
     match (done, restored) {
@@ -365,13 +359,6 @@ mod tests {
         let full = "0123456789abcdef0123";
         assert_eq!(shell_pattern(full), "exec -it 0123456789ab[0-9a-f]* sh$");
         assert_eq!(shell_pattern("abc"), "exec -it abc[0-9a-f]* sh$");
-    }
-
-    #[test]
-    fn tty_path_needs_a_terminal() {
-        assert_eq!(tty_path("ttys012\n"), Some("/dev/ttys012".into()));
-        assert_eq!(tty_path("??"), None);
-        assert_eq!(tty_path(" "), None);
     }
 
     #[test]
