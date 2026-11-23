@@ -176,8 +176,9 @@ fn write_synced(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
     f.sync_all()
 }
 
-/// SIGKILL で残った `state.json.*.tmp` のうち、`TEMP_STALE_AFTER` より古いものを消す。
+/// SIGKILL で残った `state.json.*.tmp` と `colima-output.*.tmp` のうち、`TEMP_STALE_AFTER` より古いものを消す。
 /// 消した数を返す。1件を消せなくても続ける。デーモンの起動時に呼ぶ。
+/// `colima-output.*.tmp` は作った直後に名前を消すので、古いものは作成と削除の間で落ちた残りに限る。
 pub fn remove_stale_temps(dir: &Path) -> io::Result<usize> {
     remove_stale_temps_at(dir, SystemTime::now())
 }
@@ -187,7 +188,9 @@ fn remove_stale_temps_at(dir: &Path, now: SystemTime) -> io::Result<usize> {
     for entry in std::fs::read_dir(dir)?.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !(name.starts_with("state.json.") && name.ends_with(".tmp")) {
+        let prefixed =
+            name.starts_with("state.json.") || name.starts_with(crate::colima::OUTPUT_PREFIX);
+        if !(prefixed && name.ends_with(".tmp")) {
             continue;
         }
         let age = entry
@@ -535,6 +538,19 @@ mod tests {
         for p in [fresh, edge, real, other, nontmp] {
             assert!(p.exists(), "{p:?}");
         }
+    }
+
+    #[test]
+    fn remove_stale_temps_also_removes_old_colima_output_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let secs = Duration::from_secs;
+        let old = touch_aged(dir.path(), "colima-output.1.2.tmp", secs(120));
+        let fresh = touch_aged(dir.path(), "colima-output.1.3.tmp", secs(5));
+        let nontmp = touch_aged(dir.path(), "colima-output.1.4.log", secs(600));
+        assert_eq!(remove_stale_temps(dir.path()).unwrap(), 1);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(nontmp.exists());
     }
 
     #[test]

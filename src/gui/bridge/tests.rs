@@ -13,7 +13,7 @@ fn fake_colima(dir: &tempfile::TempDir, body: &str) -> Colima {
     let p = dir.path().join("colima");
     std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    Colima::new(p)
+    Colima::with_out_dir(p, dir.path().to_path_buf())
 }
 
 fn start(profile: &str) -> Request {
@@ -188,7 +188,8 @@ fn worker_rejects_an_unsafe_profile_without_running_colima() {
 
 #[test]
 fn worker_reports_a_missing_colima_binary() {
-    let colima = Colima::new(PathBuf::from("/nonexistent/colima"));
+    let d = tempfile::tempdir().unwrap();
+    let colima = Colima::with_out_dir(PathBuf::from("/nonexistent/colima"), d.path().to_path_buf());
     let bridge = Bridge::spawn(colima, Lang::En, || {}, no_terminal()).unwrap();
     bridge.send(start("dev"));
     assert!(recv_done(&bridge).1.unwrap().contains("cannot run colima"));

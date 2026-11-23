@@ -576,7 +576,7 @@ mod tests {
         let p = dir.path().join("colima");
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Colima::new(p)
+        Colima::with_out_dir(p, dir.path().to_path_buf())
     }
 
     #[tokio::test]
@@ -647,7 +647,8 @@ esac"#,
 
     #[tokio::test]
     async fn action_spawn_failure_is_reported() {
-        let c = Colima::new(PathBuf::from("/nonexistent/colima"));
+        let d = tempfile::tempdir().unwrap();
+        let c = Colima::with_out_dir(PathBuf::from("/nonexistent/colima"), d.path().to_path_buf());
         let r = run_action(c, vec![], Arc::new(Notify::new()), Lang::En)
             .await
             .unwrap();

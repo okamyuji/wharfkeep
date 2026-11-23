@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -315,15 +316,29 @@ const STDOUT_LIMIT: usize = 1024 * 1024;
 /// 1行と stderr の保持量の上限。超えた分は読み捨てる。
 const LINE_LIMIT: usize = 64 * 1024;
 
+/// `run_streaming` が出力を書かせるファイルの名前の頭。デーモンの起動時の掃除もこれで見分ける。
+pub const OUTPUT_PREFIX: &str = "colima-output.";
+/// `run_streaming` が出力のファイルを読み直す間隔。
+const OUTPUT_POLL: Duration = Duration::from_millis(100);
+static OUTPUT_SEQ: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Debug, Clone)]
 pub struct Colima {
     bin: PathBuf,
     /// 子に渡す`PATH`。
     path_env: OsString,
+    /// `run_streaming` の出力のファイルを置くディレクトリ。
+    out_dir: PathBuf,
 }
 
 impl Colima {
+    /// 出力のファイルはデータ置き場に置く。ホームが分からないときだけ一時ディレクトリに置く。
     pub fn new(bin: PathBuf) -> Self {
+        let out_dir = crate::paths::data_dir().unwrap_or_else(std::env::temp_dir);
+        Self::with_out_dir(bin, out_dir)
+    }
+
+    pub fn with_out_dir(bin: PathBuf, out_dir: PathBuf) -> Self {
         // launchdや`open`から起動するとPATHが`/usr/bin:/bin:/usr/sbin:/sbin`だけになり、
         // colimaが呼ぶlimactlやdockerが見つからない。それらはcolimaと同じ場所に入る。
         let inherited = std::env::var_os("PATH").unwrap_or_default();
@@ -334,7 +349,11 @@ impl Colima {
             .into_iter()
             .chain(std::env::split_paths(&inherited));
         let path_env = std::env::join_paths(dirs).unwrap_or(inherited);
-        Self { bin, path_env }
+        Self {
+            bin,
+            path_env,
+            out_dir,
+        }
     }
 
     pub fn bin(&self) -> &Path {
@@ -406,7 +425,8 @@ impl Colima {
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
-    /// stdout と stderr の行を1本の受け口へ流す。終了状態は両方が閉じたあとに返る。
+    /// stdout と stderr の行を書かれた順に1本の受け口へ流す。終了状態は子が終わって出力を読み切ったあとに返る。
+    /// 呼び手（GUI）が先に終わっても、子は最後まで進む。
     pub fn run_streaming(
         &self,
         args: Vec<String>,
@@ -417,47 +437,99 @@ impl Colima {
         let (tx, rx) = mpsc::channel(256);
         let bin = self.bin.clone();
         let path_env = self.path_env.clone();
-        (rx, tokio::spawn(stream(bin, path_env, args, tx)))
+        let out_dir = self.out_dir.clone();
+        (rx, tokio::spawn(stream(bin, path_env, out_dir, args, tx)))
     }
 }
 
+/// 子の出力を書かせるファイルを開き、書き手と読み手を返す。名前はすぐ消すので、親が先に終わっても残らない。
+/// 読み手は別に開き直し、子の書き込み位置と読む位置を分ける。
+fn open_output(dir: &Path) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    crate::paths::ensure_private_dir(dir)?;
+    let n = OUTPUT_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("{OUTPUT_PREFIX}{}.{n}.tmp", std::process::id()));
+    let writer = std::fs::OpenOptions::new()
+        .append(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    let reader = std::fs::File::open(&path);
+    std::fs::remove_file(&path)?;
+    Ok((writer, reader?))
+}
+
+// パイプにしないのは、親が終わると kill_on_drop か SIGPIPE で子も止まるため。
 async fn stream(
     bin: PathBuf,
     path_env: OsString,
+    out_dir: PathBuf,
     args: Vec<String>,
     tx: mpsc::Sender<String>,
 ) -> Result<ExitStatus, ColimaError> {
+    let spawn_err = |e: std::io::Error| ColimaError::Spawn(e.to_string());
+    let (writer, mut reader) = open_output(&out_dir).map_err(spawn_err)?;
     let mut child = Command::new(bin)
         .args(args)
         .env("PATH", path_env)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .stdout(writer.try_clone().map_err(spawn_err)?)
+        .stderr(writer)
         .spawn()
-        .map_err(|e| ColimaError::Spawn(e.to_string()))?;
-    // piped を指定したので取れないことはない。
-    let out = forward(child.stdout.take().expect("piped"), tx.clone());
-    let err = forward(child.stderr.take().expect("piped"), tx);
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| ColimaError::Spawn(e.to_string()))?;
-    let _ = tokio::join!(out, err);
-    Ok(status)
-}
-
-fn forward<R: AsyncRead + Unpin + Send + 'static>(
-    r: R,
-    tx: mpsc::Sender<String>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut r = BufReader::new(r);
-        // 受け手が消えても読み続ける。読むのをやめるとパイプが詰まって子が止まる。
-        while let Ok(Some(l)) = next_line_capped(&mut r, LINE_LIMIT).await {
+        .map_err(spawn_err)?;
+    let mut lines = LineSplitter::default();
+    loop {
+        let status = tokio::select! {
+            s = child.wait() => Some(s.map_err(spawn_err)?),
+            () = tokio::time::sleep(OUTPUT_POLL) => None,
+        };
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut buf).map_err(spawn_err)?;
+        for l in lines.push(&buf) {
             let _ = tx.send(l).await;
         }
-    })
+        if let Some(status) = status {
+            if let Some(l) = lines.finish() {
+                let _ = tx.send(l).await;
+            }
+            return Ok(status);
+        }
+    }
+}
+
+/// 伸びていくファイルから読んだバイト列を行に分ける。`\n` と `\r\n` で区切る。
+/// 1行の保持量は `LINE_LIMIT` バイトまでで、超えた分は捨てる。
+#[derive(Default)]
+struct LineSplitter {
+    line: Vec<u8>,
+}
+
+impl LineSplitter {
+    /// 改行まで届いた行を返す。改行がまだ来ていない行は次の `push` まで持つ。
+    fn push(&mut self, mut bytes: &[u8]) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(nl) = bytes.iter().position(|&b| b == b'\n') {
+            self.keep(&bytes[..nl]);
+            let mut line = std::mem::take(&mut self.line);
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            out.push(String::from_utf8_lossy(&line).into_owned());
+            bytes = &bytes[nl + 1..];
+        }
+        self.keep(bytes);
+        out
+    }
+
+    fn keep(&mut self, bytes: &[u8]) {
+        let room = LINE_LIMIT.saturating_sub(self.line.len());
+        self.line.extend_from_slice(&bytes[..bytes.len().min(room)]);
+    }
+
+    /// 改行で終わらなかった最後の行。
+    fn finish(self) -> Option<String> {
+        (!self.line.is_empty()).then(|| String::from_utf8_lossy(&self.line).into_owned())
+    }
 }
 
 /// 先頭 `cap` バイトを返す。2つ目の値は、`cap` を超える出力があったかどうか。
@@ -476,34 +548,6 @@ async fn read_capped<R: AsyncRead + Unpin>(
         tokio::io::copy(r, &mut tokio::io::sink()).await?;
     }
     Ok((buf, truncated))
-}
-
-/// `lines()` と同じく `\n` と `\r\n` で区切る。ただし1行の保持量は `cap` バイトまでで、超えた分は捨てる。
-async fn next_line_capped<R: AsyncBufRead + Unpin>(
-    r: &mut R,
-    cap: usize,
-) -> std::io::Result<Option<String>> {
-    let mut line = Vec::new();
-    let mut any = false;
-    loop {
-        let buf = r.fill_buf().await?;
-        if buf.is_empty() {
-            break;
-        }
-        any = true;
-        let nl = buf.iter().position(|&b| b == b'\n');
-        let end = nl.unwrap_or(buf.len());
-        let room = cap.saturating_sub(line.len());
-        line.extend_from_slice(&buf[..end.min(room)]);
-        r.consume(end + usize::from(nl.is_some()));
-        if nl.is_some() {
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            break;
-        }
-    }
-    Ok(any.then(|| String::from_utf8_lossy(&line).into_owned()))
 }
 
 #[cfg(test)]
@@ -849,7 +893,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_streaming_merges_both_streams_and_returns_status() {
-        let c = Colima::new(PathBuf::from("/bin/sh"));
+        let d = tempfile::tempdir().unwrap();
+        let c = Colima::with_out_dir(PathBuf::from("/bin/sh"), d.path().to_path_buf());
         let args = ["-c", "echo out; echo err 1>&2; exit 3"]
             .map(String::from)
             .to_vec();
@@ -865,7 +910,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_streaming_reports_spawn_failure() {
-        let c = Colima::new(PathBuf::from("/nonexistent/colima"));
+        let d = tempfile::tempdir().unwrap();
+        let c = Colima::with_out_dir(PathBuf::from("/nonexistent/colima"), d.path().to_path_buf());
         let (mut rx, h) = c.run_streaming(vec![]);
         assert!(rx.recv().await.is_none());
         assert!(matches!(h.await.unwrap(), Err(ColimaError::Spawn(_))));
@@ -891,7 +937,7 @@ mod tests {
         let p = dir.path().join("colima");
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Colima::new(p)
+        Colima::with_out_dir(p, dir.path().to_path_buf())
     }
 
     #[tokio::test]
@@ -1029,6 +1075,106 @@ esac"#
         }
         h.await.unwrap().unwrap();
         v
+    }
+
+    #[test]
+    fn new_puts_the_output_in_the_data_dir() {
+        let c = Colima::new(PathBuf::from("/bin/sh"));
+        assert_eq!(Some(c.out_dir), crate::paths::data_dir());
+    }
+
+    #[test]
+    fn splitter_keeps_a_line_until_its_newline_arrives() {
+        let mut s = LineSplitter::default();
+        assert!(s.push(b"ab").is_empty());
+        assert_eq!(s.push(b"c\r"), Vec::<String>::new());
+        assert_eq!(s.push(b"\nd\n\ne"), ["abc", "d", ""]);
+        assert_eq!(s.finish().as_deref(), Some("e"));
+        assert_eq!(LineSplitter::default().finish(), None);
+    }
+
+    #[test]
+    fn splitter_cuts_a_line_split_over_pushes_at_the_limit() {
+        let mut s = LineSplitter::default();
+        assert!(s.push(&vec![b'x'; LINE_LIMIT - 1]).is_empty());
+        assert!(s.push(b"yz").is_empty());
+        let v = s.push(b"\nnext");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].len(), LINE_LIMIT);
+        assert!(v[0].ends_with("xy"));
+        assert_eq!(s.finish().as_deref(), Some("next"));
+    }
+
+    #[tokio::test]
+    async fn streamed_output_arrives_whole_and_leaves_no_file() {
+        let d = tempfile::tempdir().unwrap();
+        let c = fake(
+            &d,
+            "echo one; sleep 0.3; printf 'tw'; sleep 0.3; echo o 1>&2; echo three; exit 4",
+        );
+        let (mut rx, h) = c.run_streaming(vec![]);
+        let mut v = vec![];
+        while let Some(l) = rx.recv().await {
+            v.push(l);
+        }
+        assert_eq!(v, ["one", "two", "three"]);
+        assert_eq!(h.await.unwrap().unwrap().code(), Some(4));
+        let names: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["colima"]);
+    }
+
+    #[test]
+    fn output_dir_is_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("data");
+        let (w, _r) = open_output(&out).unwrap();
+        let mode = |m: std::fs::Metadata| m.permissions().mode() & 0o777;
+        assert_eq!(mode(std::fs::metadata(&out).unwrap()), 0o700);
+        assert_eq!(mode(w.metadata().unwrap()), 0o600);
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_streaming_reports_an_unusable_output_dir() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        let c = Colima::with_out_dir(PathBuf::from("/bin/sh"), file.join("sub"));
+        let (mut rx, h) = c.run_streaming(vec![]);
+        assert!(rx.recv().await.is_none());
+        assert!(matches!(h.await.unwrap(), Err(ColimaError::Spawn(_))));
+    }
+
+    /// GUI の終了を、ランタイムごと捨てて真似る。受け口と task だけを捨てても、読み手の task は残る。
+    #[test]
+    fn streamed_colima_runs_to_the_end_after_the_runtime_is_dropped() {
+        let d = tempfile::tempdir().unwrap();
+        let marker = d.path().join("done");
+        let c = fake(
+            &d,
+            &format!(
+                "echo begin; sleep 1; echo more; echo more 1>&2; touch '{}'",
+                marker.display()
+            ),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut rx, h) = rt.block_on(async { c.run_streaming(vec![]) });
+        assert_eq!(rt.block_on(rx.recv()).as_deref(), Some("begin"));
+        drop((rx, h, rt));
+        for _ in 0..100 {
+            if marker.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("colima stopped when the runtime was dropped");
     }
 
     #[tokio::test]
