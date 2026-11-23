@@ -78,8 +78,10 @@ impl IconState {
 }
 
 pub fn menu_model(s: &Snapshot) -> Vec<MenuEntry> {
+    // 操作が別のインスタンスに向く名前の行は、押せても断られるだけなので出さない。
     s.instances
         .iter()
+        .filter(|i| crate::colima::check_profile(&i.name).is_ok())
         .map(|i| MenuEntry::Instance {
             name: i.name.clone(),
             running: i.status == InstanceStatus::Running,
@@ -361,6 +363,30 @@ mod tests {
                 },
                 MenuEntry::Instance {
                     name: "odd".into(),
+                    running: false
+                },
+                MenuEntry::OpenWindow,
+                MenuEntry::StartAtLogin,
+                MenuEntry::Quit,
+            ]
+        );
+    }
+
+    #[test]
+    fn menu_omits_instances_whose_name_colima_resolves_elsewhere() {
+        let s = snap(
+            vec![
+                instance("colima-dev", InstanceStatus::Running),
+                instance("dev", InstanceStatus::Stopped),
+                instance("colima", InstanceStatus::Stopped),
+            ],
+            vec![],
+        );
+        assert_eq!(
+            menu_model(&s),
+            [
+                MenuEntry::Instance {
+                    name: "dev".into(),
                     running: false
                 },
                 MenuEntry::OpenWindow,

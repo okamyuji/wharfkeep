@@ -213,7 +213,7 @@ pub enum Action {
 /// プロフィール名は colima のデータ置き場のパス部品になるので、`.` と `..` も断る。
 /// 先頭の `-` は colima がオプションとして解釈する（`-h`、`--force`）ので断る。
 /// 名前は colima の全操作がこの検査を通る。
-fn check_profile(p: &str) -> Result<(), ColimaError> {
+pub fn check_profile(p: &str) -> Result<(), ColimaError> {
     let ok = !p.is_empty()
         && !p.starts_with('-')
         && p.chars()
