@@ -757,6 +757,8 @@ mod tests {
             "colima-default",
             "colima-Default",
             "Default",
+            "COLIMA",
+            "colima-COLIMA",
             // colima は `colima-` を1回だけ外すので、一覧に `colima-dev` と出る。行の削除が `dev` を消す。
             "colima-colima-dev",
             "colima-colima-default",
