@@ -3,7 +3,17 @@
 # Cargo.toml の版は「次に組む .app の版」。組めたら patch を1つ上げ、次のビルドに備える。
 set -eu
 # CDPATH があると相対の cd が別のプロジェクトへ移り、その Cargo.toml を書き換えてしまう。
-CDPATH= cd -- "$(dirname -- "$0")/.."
+# symlink から呼ばれても、実体の置き場（このリポジトリの scripts/）を基準にする。
+# macOS の readlink に -f は無いので、1段ずつたどる。循環する symlink は実行の時点で失敗する。
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink -- "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+CDPATH= cd -- "$(dirname -- "$self")/.."
 # [package] の版は行頭の version。依存の version はインラインの表の中なので当たらない。
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {

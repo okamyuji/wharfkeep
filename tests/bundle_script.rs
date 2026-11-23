@@ -97,8 +97,12 @@ fn sandbox(own_git: bool) -> Sandbox {
 
 impl Sandbox {
     fn run_in(&self, dir: &Path, env: &[(&str, &str)]) -> Output {
+        self.run_script(Path::new("scripts/bundle.sh"), dir, env)
+    }
+
+    fn run_script(&self, script: &Path, dir: &Path, env: &[(&str, &str)]) -> Output {
         let path = format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap());
-        let mut cmd = Command::new("scripts/bundle.sh");
+        let mut cmd = Command::new(script);
         // シェルで cd してから呼んだときと同じく、論理パスを PWD に渡す。
         cmd.current_dir(dir).env("PATH", path).env("PWD", dir);
         // CI の中で走っても、手元の組み立てとして試す。
@@ -231,8 +235,33 @@ fn a_cdpath_does_not_move_the_build_to_another_project() {
     fs::create_dir_all(decoy.join("scripts")).unwrap();
     let toml = "[package]\nversion = \"9.9.9\"\n";
     fs::write(decoy.join("Cargo.toml"), toml).unwrap();
+    // 組み立てが囮へ移っても途中で止まらず、Cargo.toml の書き換えまで進むようにする。
+    fs::create_dir_all(decoy.join("assets")).unwrap();
+    fs::copy(
+        s.repo.join("assets/Info.plist"),
+        decoy.join("assets/Info.plist"),
+    )
+    .unwrap();
     s.run(&[("CDPATH", decoy.to_str().unwrap())]);
     assert_eq!(fs::read_to_string(decoy.join("Cargo.toml")).unwrap(), toml);
     assert!(!decoy.join("target").exists());
     assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
+}
+
+#[test]
+fn a_symlinked_script_builds_in_the_repository_it_points_to() {
+    let s = sandbox(true);
+    let root = s.repo.parent().unwrap().to_path_buf();
+    // 相対の symlink を、さらに絶対の symlink から指す。どちらの置き場にも Cargo.toml は無い。
+    let links = root.join("links");
+    fs::create_dir(&links).unwrap();
+    std::os::unix::fs::symlink("../Repo/scripts/bundle.sh", links.join("bundle.sh")).unwrap();
+    let outer = root.join("outer");
+    fs::create_dir(&outer).unwrap();
+    std::os::unix::fs::symlink(links.join("bundle.sh"), outer.join("b")).unwrap();
+
+    let out = s.run_script(&outer.join("b"), &root, &[("WHARFKEEP_NO_BUMP", "1")]);
+    assert!(out.status.success(), "bundle.sh: {out:?}");
+    assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
+    assert!(!links.join("target").exists() && !root.join("target").exists());
 }
