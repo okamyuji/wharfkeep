@@ -1,5 +1,5 @@
 # open_in_terminal は固定パスの配線だけで、実ターミナルを開く ignore 付き試験でしか確かめられない。
-# 次の項目は AppKit・eframe・子プロセス起動への配線で、scripts/e2e.sh（二度目の Open Window、
+# 次の項目は AppKit・eframe・子プロセス起動への配線で、cargo xtask e2e（二度目の Open Window、
 # Start daemon、サイドバーの操作）で確かめる。paint_barは色帯を塗るだけで、行の色帯はe2eのスクリーンショット
 # （en-5r-row-*、ja-5-gui）で確かめる。
 # デーモンのApp::on_menuは選ばれた項目を各処理へ振り分けるだけで、判断はtray_argsとsave_autostartにある。

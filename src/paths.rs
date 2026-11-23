@@ -90,10 +90,13 @@ mod tests {
 
     #[test]
     fn ignores_relative_path_entries() {
-        // cargo testの作業ディレクトリはcrateの根で、scripts/bundle.shは実行権を持つ。
-        assert!(Path::new("scripts/bundle.sh").is_file());
-        assert_eq!(find_binary_in("bundle.sh", "scripts", &[]), None);
-        assert_eq!(find_binary_in("bundle.sh", ":scripts:", &[]), None);
+        // cargo testの作業ディレクトリはcrateの根なので、そこに置いた実行ファイルは相対の名前で見える。
+        let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        make_exe(dir.path(), "colima", 0o755);
+        let rel = dir.path().file_name().unwrap().to_str().unwrap();
+        assert!(Path::new(rel).join("colima").is_file());
+        assert_eq!(find_binary_in("colima", rel, &[]), None);
+        assert_eq!(find_binary_in("colima", &format!(":{rel}:"), &[]), None);
     }
 
     #[test]
