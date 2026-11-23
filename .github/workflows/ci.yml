@@ -45,14 +45,14 @@ jobs:
     concurrency:
       group: release
       cancel-in-progress: false
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check for an existing release
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
@@ -62,8 +62,10 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Build and publish
+      # 依存の build script が token を読めないよう、組み立てには token を渡さない。
+      - name: Build
         if: steps.version.outputs.exists == 'false'
+        id: build
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -71,9 +73,17 @@ jobs:
           arch=$(lipo -archs target/wharfkeep.app/Contents/MacOS/wharfkeep)
           zip="target/wharfkeep-$VERSION-macos-$arch.zip"
           ditto -c -k --keepParent target/wharfkeep.app "$zip"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        if: steps.version.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ZIP: ${{ steps.build.outputs.zip }}
+        run: |
           notes="$(cat .github/release-notes.md)
 
-          SHA-256 of the zip: \`$(shasum -a 256 "$zip" | cut -d' ' -f1)\`"
-          gh release create "v$VERSION" "$zip" -R "$GITHUB_REPOSITORY" \
+          SHA-256 of the zip: \`$(shasum -a 256 "$ZIP" | cut -d' ' -f1)\`"
+          gh release create "v$VERSION" "$ZIP" -R "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --title "wharfkeep $VERSION" \
             --notes "$notes" --generate-notes
