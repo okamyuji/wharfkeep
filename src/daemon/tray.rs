@@ -110,7 +110,7 @@ pub fn icon_state(s: &Snapshot) -> IconState {
     }
 }
 
-/// `size`×`size`の塗りつぶした丸のRGBA（乗算済みでないアルファ）。画像ファイルを同梱しないため描く。
+/// `ICON_PIXELS`×`ICON_PIXELS`の輸送用コンテナの形のRGBA（乗算済みでないアルファ）。画像ファイルを同梱しないため描く。
 pub fn icon_rgba(state: IconState) -> Vec<u8> {
     // 36画素の格子に描く輸送用コンテナ。上下の縁と左右の柱のあいだに、縦の溝を3本入れる。
     (0..ICON_PIXELS * ICON_PIXELS)
