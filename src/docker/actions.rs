@@ -142,6 +142,9 @@ fn is_invisible(c: char) -> bool {
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{2069}'
             | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
     )
 }
 
@@ -526,6 +529,11 @@ mod tests {
             "A\u{2060}=1",
             "A\u{2064}=1",
             "A\u{2069}=1",
+            "A\u{e0001}=1",
+            "A=\u{e0020}",
+            "A=\u{e007f}",
+            "A\u{fff9}=1",
+            "A=\u{fffb}",
         ] {
             assert_eq!(
                 parse_env(bad),
@@ -568,6 +576,8 @@ mod tests {
             "/a:/b\n",
             "/a\u{202e}b:/y",
             "/a:/b\u{2066}",
+            "/a\u{e0041}:/b",
+            "/a:/b\u{fffa}",
             &format!("{}:/d", "v".repeat(VOLUME_NAME_MAX + 1)),
         ] {
             assert_eq!(
