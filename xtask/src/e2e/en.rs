@@ -81,7 +81,7 @@ impl Ctx {
         self.need(up, || "GUIのプロセスが立ちません".into());
         let gpid = self.gpid();
         self.say(&format!("(4) GUI pid={gpid}"));
-        self.check_navigation(&gpid, "Containers", "Dashboard");
+        self.check_navigation(&gpid, "Containers", "Dashboard", "en-4-fail");
         self.shot_window("en-5-gui", &gpid);
         self.say("(5) 「Containers」を押し、見出しが「Containers」になった");
     }

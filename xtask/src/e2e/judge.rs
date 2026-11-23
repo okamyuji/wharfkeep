@@ -85,30 +85,37 @@ fn strip_location(e: &str) -> &str {
 }
 
 /// 種類と名前の要素に`verb`を当てるAppleScript。例: `ax_script("click", "button", "Close", "")`。
-/// group 1の子（a）と、その子（b）の2段を順に試す。通知や下のパネルの有無で添字が変わるためで、
-/// 確認ダイアログ（egui::Modal）はaの「window 1」に、コンテナの詳細の欄のボタンはbの中に並ぶ。
+/// まずgroup 1の子（a）をすべて試す。通知や下のパネルの有無で添字が変わるためで、確認ダイアログ
+/// （egui::Modal）はaの「window 1」として並ぶ。見つからなければ、子の子（b）を試す。コンテナの詳細の欄の
+/// ボタンはここに並ぶ。子を返せない要素で全体が止まらないよう、bの取得はtryの中に置く。
 /// `entire contents`はリストを返し、`whose`で絞れない。1つずつ調べると要素ごとに問い合わせが走り、
 /// ログの行が多いと時間が足りないので使わない。
 pub fn ax_script(verb: &str, kind: &str, name: &str, tail: &str) -> String {
+    let target = format!("{verb} {kind} \"{name}\"");
     format!(
         "set done to false
-repeat with a in (UI elements of group 1 of window \"wharfkeep\")
-set a to contents of a
+set tops to UI elements of group 1 of window \"wharfkeep\"
+repeat with a in tops
 try
-{verb} {kind} \"{name}\" of a{tail}
+{target} of (contents of a){tail}
 set done to true
+exit repeat
 end try
-if done then exit repeat
-repeat with b in (UI elements of a)
-set b to contents of b
+end repeat
+if not done then
+repeat with a in tops
 try
-{verb} {kind} \"{name}\" of b{tail}
+repeat with b in (UI elements of (contents of a))
+try
+{target} of (contents of b){tail}
 set done to true
+exit repeat
+end try
+end repeat
 end try
 if done then exit repeat
 end repeat
-if done then exit repeat
-end repeat
+end if
 if not done then error \"{kind} {name} が見つかりません\""
     )
 }
@@ -434,23 +441,45 @@ mod tests {
     }
 
     #[test]
-    fn ax_script_tries_two_levels_below_group_1() {
-        let s = ax_script("click", "button", "Close", "");
-        let first = s.find("click button \"Close\" of a\n").unwrap();
-        let second = s.find("click button \"Close\" of b\n").unwrap();
-        assert!(first < second, "{s}");
-        assert!(s.contains("repeat with a in (UI elements of group 1 of window \"wharfkeep\")"));
-        assert!(s.contains("repeat with b in (UI elements of a)"));
+    fn ax_script_tries_every_child_before_any_grandchild() {
+        let s = ax_script("click", "checkbox", "Containers", "");
+        let child = s
+            .find("click checkbox \"Containers\" of (contents of a)\n")
+            .unwrap();
+        let first_loop_end = s[child..].find("end repeat").unwrap() + child;
+        let grandchild = s
+            .find("click checkbox \"Containers\" of (contents of b)\n")
+            .unwrap();
+        // 1段目をすべて試し終えてから2段目へ進む。今まで通っていた探し方を先に保つため。
+        assert!(first_loop_end < grandchild, "{s}");
         assert!(!s.contains("entire contents"));
-        assert!(s.ends_with("if not done then error \"button Close が見つかりません\""));
+        assert!(s.ends_with("if not done then error \"checkbox Containers が見つかりません\""));
+    }
+
+    #[test]
+    fn ax_script_keeps_going_when_a_child_has_no_children() {
+        let s = ax_script("click", "button", "Close", "");
+        // 子を返せない要素で止まらないよう、2段目の子の取得はtryの中に置く。
+        assert!(
+            s.contains("try\nrepeat with b in (UI elements of (contents of a))\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("end repeat\nend try\nif done then exit repeat\n"),
+            "{s}"
+        );
         let set = ax_script(
             "set value of",
             "text field",
             "Image",
             " to \"nginx:alpine\"",
         );
-        assert!(set.contains("set value of text field \"Image\" of a to \"nginx:alpine\"\n"));
-        assert!(set.contains("set value of text field \"Image\" of b to \"nginx:alpine\"\n"));
+        assert!(set.contains(
+            "set value of text field \"Image\" of (contents of a) to \"nginx:alpine\"\n"
+        ));
+        assert!(set.contains(
+            "set value of text field \"Image\" of (contents of b) to \"nginx:alpine\"\n"
+        ));
     }
 
     #[test]

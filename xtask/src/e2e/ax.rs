@@ -231,14 +231,27 @@ return (x as text) & "," & (y as text) & "," & (w as text) & "," & (h as text)"#
     }
 
     /// サイドバーの項目を押し、同じ名前の見出しが出ることで、eguiが押されたことを受け取ったと確かめる。
-    pub(super) fn check_navigation(&self, gpid: &str, page: &str, other: &str) {
-        let seen = self.wait(15, || self.has_element(gpid, &format!("checkbox {page}")));
-        self.need(seen, || format!("サイドバーの「{page}」がAXで見えません"));
+    /// 見出しが出なければ、AXの要素の名前を添え、画面を`fail_shot`に撮って失敗する。
+    pub(super) fn check_navigation(&self, gpid: &str, page: &str, other: &str, fail_shot: &str) {
+        let sidebar = format!("checkbox {page}");
+        self.see(
+            15,
+            gpid,
+            &sidebar,
+            &format!("サイドバーの「{page}」がAXで見えません"),
+        );
         let before = self.has_element(gpid, &format!("UI element {other}"));
-        self.need(before, || format!("押す前の見出し「{other}」がありません"));
-        let _ = self.ax_press(gpid, "checkbox", page);
+        self.need(before, || {
+            format!("押す前の見出し「{other}」がありません。{}", self.tree(gpid))
+        });
+        self.press(gpid, "checkbox", page);
         let after = self.wait(5, || self.has_element(gpid, &format!("UI element {page}")));
-        self.need(after, || format!("押した後の見出し「{page}」が出ません"));
+        if !after {
+            self.shot_window(fail_shot, gpid);
+        }
+        self.need(after, || {
+            format!("押した後の見出し「{page}」が出ません。{}", self.tree(gpid))
+        });
     }
 
     /// 要素が出るまで待つ。出なければ`msg`で失敗する。

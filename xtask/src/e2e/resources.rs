@@ -522,7 +522,7 @@ impl Ctx {
         let up = self.wait(10, || self.guis_are(1));
         self.need(up, || "GUIのプロセスが立ちません（ja）".into());
         let gpid = self.gpid();
-        self.check_navigation(&gpid, "コンテナ", "ダッシュボード");
+        self.check_navigation(&gpid, "コンテナ", "ダッシュボード", "ja-4-fail");
         self.see(
             15,
             &gpid,
