@@ -436,8 +436,8 @@ const TEXTS: &[(Msg, &str, &str)] = &[
     ),
     (
         Msg::ColimaProfile,
-        "invalid profile name (use A-Z a-z 0-9 . _ - only, not starting with -)",
-        "プロフィール名が不正です（使える文字は A-Z a-z 0-9 . _ - だけ。先頭に - は使えません）",
+        "invalid profile name (use A-Z a-z 0-9 . _ - only; not starting with -; not \"colima\" or starting with \"colima-\", which colima resolves to another instance)",
+        "プロフィール名が不正です（使える文字は A-Z a-z 0-9 . _ - だけ。先頭に - は使えません。colima が別のインスタンスと解釈する「colima」と「colima-」で始まる名前も使えません）",
     ),
     (
         Msg::ColimaCpus,

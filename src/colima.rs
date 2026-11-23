@@ -212,14 +212,17 @@ pub enum Action {
 
 /// プロフィール名は colima のデータ置き場のパス部品になるので、`.` と `..` も断る。
 /// 先頭の `-` は colima がオプションとして解釈する（`-h`、`--force`）ので断る。
+/// 名前は colima の全操作がこの検査を通る。
 fn check_profile(p: &str) -> Result<(), ColimaError> {
     let ok = !p.is_empty()
         && !p.starts_with('-')
         && p.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
         && !p.chars().all(|c| c == '.')
-        // colima は先頭の `colima-` を外した名前で置き場を作る。空や `.` だけだとホームなどを指す。
-        && !short_name(p).chars().all(|c| c == '.');
+        // colima は `colima` を既定のインスタンスと読み、`colima-` を1回だけ外す（大文字と小文字を区別する）。
+        // 一覧の名前と操作で解決される名前がずれ、`colima delete colima-dev` が別の VM を消す。
+        && p != "colima"
+        && !p.starts_with("colima-");
     ok.then_some(())
         .ok_or_else(|| ColimaError::InvalidProfile(p.into()))
 }
@@ -242,16 +245,11 @@ pub fn same_instance(new: &str, existing: &str) -> bool {
 
 pub fn start_args(spec: &CreateSpec) -> Result<Vec<String>, ColimaError> {
     check_profile(&spec.profile)?;
-    // `colima-colima` は一覧に `colima`、`colima-default` は `default` と出る。colima はその名前を
-    // 既定のインスタンスと読むので、行の停止や削除が既定のインスタンスに向いてしまう。
-    let short = short_name(&spec.profile);
-    let aliases_default = ["colima", "default"]
-        .iter()
-        .any(|d| short.eq_ignore_ascii_case(d));
-    // colima は `colima-` を1回だけ外す（大文字と小文字を区別する）。`colima-colima-dev` は一覧に
-    // `colima-dev` と出て、その行の削除は colima がもう一度解決した `dev` を消す。
-    let double_prefix = short.starts_with("colima-");
-    if (aliases_default || double_prefix) && !matches!(spec.profile.as_str(), "colima" | "default")
+    // 大文字と小文字を区別しない macOS の置き場では `Default` や `COLIMA` も既定のインスタンスと重なる。
+    if spec.profile != "default"
+        && ["colima", "default"]
+            .iter()
+            .any(|d| spec.profile.eq_ignore_ascii_case(d))
     {
         return Err(ColimaError::InvalidProfile(spec.profile.clone()));
     }
@@ -772,22 +770,93 @@ mod tests {
                 "{p:?}"
             );
         }
-        for p in [
-            "a",
-            "A-z_0.9",
-            "..a",
-            "a..",
-            "a-b",
-            "default",
-            "colima",
-            "colima-dev",
-            "colima-Colima-dev",
-        ] {
+        for p in ["a", "A-z_0.9", "..a", "a..", "a-b", "default"] {
             let s = CreateSpec {
                 profile: p.into(),
                 ..spec()
             };
             assert!(start_args(&s).is_ok(), "{p:?}");
+        }
+    }
+
+    /// colima は `colima-` を1回だけ外し、`colima` を既定のインスタンスと読む。
+    /// 一覧の行の名前と、colima が操作で解決する名前がずれる。
+    const SHADOWING: [&str; 6] = [
+        "colima",
+        "colima-dev",
+        "colima-colima",
+        "colima-default",
+        "colima-colima-dev",
+        "colima-Colima-dev",
+    ];
+    const PLAIN: [&str; 4] = ["default", "dev", "Colima-dev", "Colima"];
+
+    #[test]
+    fn every_command_builder_rejects_names_colima_resolves_elsewhere() {
+        for p in SHADOWING {
+            let spec = CreateSpec {
+                profile: p.into(),
+                ..spec()
+            };
+            assert!(
+                matches!(start_args(&spec), Err(ColimaError::InvalidProfile(_))),
+                "start {p}"
+            );
+            for a in [Action::Start, Action::Stop, Action::Restart, Action::Delete] {
+                assert!(
+                    matches!(simple_args(a, p), Err(ColimaError::InvalidProfile(_))),
+                    "{a:?} {p}"
+                );
+            }
+            assert!(
+                matches!(ssh_args(p), Err(ColimaError::InvalidProfile(_))),
+                "ssh {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_command_builder_accepts_plain_names() {
+        for p in PLAIN {
+            // `Colima` と `Colima-dev` は大文字始まりで、colima は別名にしない。
+            let spec = CreateSpec {
+                profile: p.into(),
+                ..spec()
+            };
+            let ok = p != "Colima";
+            assert_eq!(start_args(&spec).is_ok(), ok, "start {p}");
+            assert!(simple_args(Action::Stop, p).is_ok(), "simple {p}");
+            assert_eq!(ssh_args(p).unwrap(), ["ssh", "-p", p]);
+        }
+    }
+
+    #[tokio::test]
+    async fn docker_socket_rejects_shadowing_names_before_running_colima() {
+        let d = tempfile::tempdir().unwrap();
+        let marker = d.path().join("ran");
+        let c = fake(
+            &d,
+            &format!(
+                "touch '{}'; echo '{{\"docker_socket\":\"unix:///s/d.sock\"}}'",
+                marker.display()
+            ),
+        );
+        for p in SHADOWING {
+            assert!(
+                matches!(
+                    c.docker_socket(p).await,
+                    Err(ColimaError::InvalidProfile(_))
+                ),
+                "{p}"
+            );
+        }
+        assert!(!marker.exists());
+        for p in PLAIN {
+            assert_eq!(
+                c.docker_socket(p).await.unwrap(),
+                PathBuf::from("/s/d.sock"),
+                "{p}"
+            );
         }
     }
 
