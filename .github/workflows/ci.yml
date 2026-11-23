@@ -57,12 +57,19 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # 404 だけを「無い」とする。ほかの失敗（5xx、rate limit）を「無い」と読むと、古いタグに公開しかねない。
+          found() {
+            if err=$(gh api "$1" 2>&1 >/dev/null); then return 0; fi
+            case "$err" in *"(HTTP 404)"*) return 1 ;; esac
+            echo "::error::GitHub API failed for $1: $err"
+            exit 1
+          }
+          if found "repos/$GITHUB_REPOSITORY/releases/tags/v$version"; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # タグだけが先にあると、gh release create は --target を無視してそのタグに付ける。
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" >/dev/null 2>&1; then
+          if found "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version"; then
             echo "::error::tag v$version exists without a release; delete the tag or raise the version"
             exit 1
           fi
@@ -109,8 +116,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-build.outputs.version }}
         run: |
+          # 404 だけを「無い」とする。ほかの失敗（5xx、rate limit）を「無い」と読むと、古いタグに公開しかねない。
+          found() {
+            if err=$(gh api "$1" 2>&1 >/dev/null); then return 0; fi
+            case "$err" in *"(HTTP 404)"*) return 1 ;; esac
+            echo "::error::GitHub API failed for $1: $err"
+            exit 1
+          }
           # 先に走った実行が同じ版を公開し終えていれば、何もしない。
-          if gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if found "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION"; then
             echo "v$VERSION is already released"
             exit 0
           fi
