@@ -115,7 +115,9 @@ jobs:
             exit 0
           fi
           set -- dist/wharfkeep-"$VERSION"-macos-*.zip
-          [ "$#" -eq 1 ] && [ -f "$1" ]
+          # set -e は && の途中の失敗では止まらないので、1つずつ止める。
+          [ "$#" -eq 1 ] || { echo "::error::expected one zip, found $#"; exit 1; }
+          [ -f "$1" ] || { echo "::error::no zip for v$VERSION"; exit 1; }
           notes="$(cat .github/release-notes.md)
 
           SHA-256 of the zip: \`$(sha256sum "$1" | cut -d' ' -f1)\`"
