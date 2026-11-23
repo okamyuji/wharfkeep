@@ -716,10 +716,15 @@ mod tests {
         let height = 300.0;
         let mut state = named_state("dev");
         let mut snapshot = state.snapshot.clone().unwrap();
+        // 窓からはみ出す数にする。収まる数だと、スクロール位置が残っても1行目は隠れない。
         if let Some(DockerState::Ready(sum)) = snapshot.docker.get_mut("dev") {
-            for (i, v) in sum.volumes.iter_mut().enumerate() {
-                v.name = format!("data-{i}");
-            }
+            let proto = sum.volumes[0].clone();
+            sum.volumes = (0..40)
+                .map(|i| VolumeRow {
+                    name: format!("data-{i}"),
+                    ..proto.clone()
+                })
+                .collect();
         }
         state.apply_snapshot(Some(snapshot));
         let (mut h, _ends) =
