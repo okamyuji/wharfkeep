@@ -207,13 +207,14 @@ fn install(s: &Setup, app: &Path) -> Result<String, String> {
     replace(&staging, &s.app()).map_err(|e| format!("{}: {e}", s.app().display()))?;
     check(Command::new(&s.open).arg(s.app()))?;
     let exe = s.exe();
-    let program = || {
-        fs::read_to_string(s.plist())
-            .is_ok_and(|p| string_after(&p, "ProgramArguments") == exe.to_str())
+    // 前の導入のplistが同じ場所を指していることがあるので、bootoutで外したジョブが読み込まれ直すまで待つ。
+    // 読み込まれ直せば、開いた.appがロックを取り、plistを書き直して登録し終えている。
+    let registered = || {
+        loaded(s)
+            && fs::read_to_string(s.plist())
+                .is_ok_and(|p| string_after(&p, "ProgramArguments") == exe.to_str())
     };
-    // 開いた.appはロックを取ってから登録し直すので、launchdが起こした方はロックを取れずに終わる。
-    // 開いた方を止めてlaunchdから起こし直し、ログイン時と同じ形で動かす。
-    if wait_until(s.wait, program) {
+    if wait_until(s.wait, registered) {
         stop_holder(&s.data().join("daemon.lock"), s.wait)?;
         check(Command::new(&s.launchctl).args(["kickstart", &s.service]))?;
         wait_until(s.wait, || is_running(&print(s)));
@@ -303,6 +304,15 @@ fn held(lock: &Path) -> bool {
 
 fn wait_until(limit: Duration, ok: impl FnMut() -> bool) -> bool {
     crate::wait::wait_until(limit, Duration::from_millis(100), ok)
+}
+
+fn loaded(s: &Setup) -> bool {
+    Command::new(&s.launchctl)
+        .args(["print", &s.service])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|st| st.success())
 }
 
 fn print(s: &Setup) -> String {

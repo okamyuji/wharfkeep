@@ -238,6 +238,21 @@ fn install_replaces_the_app_and_hands_the_daemon_to_launchd() {
 }
 
 #[test]
+fn install_waits_for_the_opened_app_to_register_again() {
+    let f = fake(Writes::Own, true);
+    // 前の導入のplistが、同じ/Applicationsを指したまま残っている。
+    fs::create_dir_all(f.s.plist().parent().unwrap()).unwrap();
+    fs::write(f.s.plist(), launch_agent(&f.s.exe().display().to_string())).unwrap();
+    // 開いた.appは、少し遅れてplistを書き直し、launchdに登録し直す。
+    let open = fs::read_to_string(&f.s.open)
+        .unwrap()
+        .replace("mkdir -p", "(sleep 0.5; mkdir -p")
+        .replace("/loaded\n", "/loaded) &\n");
+    script(&f.s.open, open.trim_start_matches("#!/bin/sh\n"));
+    assert_eq!(install(&f.s, &f.built), Ok("0.1.7".to_string()));
+}
+
+#[test]
 fn install_reports_a_login_item_that_was_not_written() {
     let f = fake(Writes::Nothing, true);
     let e = install(&f.s, &f.built).unwrap_err();
