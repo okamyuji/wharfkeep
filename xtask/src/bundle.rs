@@ -147,7 +147,7 @@ fn assemble(root: &Path, app: &Path, shown: &str, version: &str) -> io::Result<(
     .map_err(io::Error::other)
 }
 
-fn check(cmd: &mut Command) -> Result<(), String> {
+pub(crate) fn check(cmd: &mut Command) -> Result<(), String> {
     let name = cmd.get_program().to_os_string();
     let status = cmd.status().map_err(|e| format!("{}: {e}", show(&name)))?;
     if status.success() {
@@ -161,7 +161,7 @@ fn show(s: &OsStr) -> String {
     s.to_string_lossy().into_owned()
 }
 
-fn io_err(path: &Path, e: io::Error) -> String {
+pub(crate) fn io_err(path: &Path, e: io::Error) -> String {
     format!("{}: {e}", path.display())
 }
 

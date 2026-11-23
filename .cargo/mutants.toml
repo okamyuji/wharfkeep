@@ -7,6 +7,11 @@
 # daemon::run（Result<(), String>を返すrun）はイベントループ、tokio、監視スレッドを組む配線で、
 # e2eの各段がtarget/wharfkeep.appのデーモンを起動して確かめる。StatusItem::rebuild_menuはmenu_itemsの結果を
 # NSMenuへ並べるだけで、e2eのchoose_menu_itemが項目を名前で選んで確かめる。
+# xtaskのrun_install、run_uninstall、Setup::systemは、実機の/Applicationsとlaunchdを書き換える配線。
+# mutantが試験からここへ流れると利用者の.appとデーモンを消すので、変異させない。判断はinstall、uninstall、
+# downloadを一時ディレクトリと偽のlaunchctl、open、ghで流す試験で確かめる。
+# holderをSome(0)に替えると`kill -TERM 0`が試験自身のプロセスグループへ届き、mutantsの実行を止める。
+# 0を返さないことはholderの単体試験で確かめる。
 exclude_re = [
   "replace open_in_terminal -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
   "replace raise_running -> bool with",
@@ -20,4 +25,8 @@ exclude_re = [
   "replace App::on_menu with \\(\\)",
   "replace run -> Result<\\(\\), String> with",
   "replace StatusItem::rebuild_menu with \\(\\)",
+  "\\brun_install\\b",
+  "\\brun_uninstall\\b",
+  "Setup::system",
+  "replace holder -> Option<u32> with Some\\(0\\)",
 ]

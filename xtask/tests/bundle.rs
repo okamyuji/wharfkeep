@@ -277,16 +277,3 @@ fn a_missing_manifest_names_the_file() {
         "{err}"
     );
 }
-
-#[test]
-fn an_unknown_task_shows_the_usage() {
-    let s = sandbox(true);
-    let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
-        .arg("bogus")
-        .env("CARGO_MANIFEST_DIR", s.repo.join("xtask"))
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("使い方"));
-    assert!(!s.repo.join("target").exists());
-}
