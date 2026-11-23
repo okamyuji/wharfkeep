@@ -17,13 +17,30 @@ struct Sandbox {
     repo: PathBuf,
 }
 
+/// 利用者の git の設定（署名、未追跡の表示など）と、git の hook が渡す環境変数を読ませない。
+fn isolate(cmd: &mut Command) -> &mut Command {
+    for k in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_COMMON_DIR",
+        "GIT_CEILING_DIRECTORIES",
+        "GITHUB_ACTIONS",
+        "WHARFKEEP_RELEASE",
+        "WHARFKEEP_NO_BUMP",
+    ] {
+        cmd.env_remove(k);
+    }
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = isolate(&mut Command::new("git"))
         .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
         .args(args)
         .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
         .output()
         .expect("run git");
     assert!(out.status.success(), "git {args:?}: {out:?}");
@@ -59,7 +76,12 @@ fn sandbox(own_git: bool) -> Sandbox {
         repo.join("assets/Info.plist"),
     )
     .unwrap();
-    fs::write(repo.join("Cargo.toml"), "[package]\nversion = \"0.1.0\"\n").unwrap();
+    // 依存の表にも行頭の version があり、版上げが [package] の行だけを変えるかを見る。
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nversion = \"0.1.0\"\n\n[dependencies.x]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     fs::write(repo.join("Cargo.lock"), "lock 0.1.0\n").unwrap();
     fs::write(repo.join(".gitignore"), "target/\n").unwrap();
     if own_git {
@@ -81,16 +103,7 @@ impl Sandbox {
         // シェルで cd してから呼んだときと同じく、論理パスを PWD に渡す。
         cmd.current_dir(dir).env("PATH", path).env("PWD", dir);
         // CI の中で走っても、手元の組み立てとして試す。
-        for k in [
-            "GITHUB_ACTIONS",
-            "WHARFKEEP_RELEASE",
-            "WHARFKEEP_NO_BUMP",
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-        ] {
-            cmd.env_remove(k);
-        }
-        cmd.envs(env.iter().copied());
+        isolate(&mut cmd).envs(env.iter().copied());
         cmd.output().expect("run bundle.sh")
     }
 
@@ -124,7 +137,10 @@ fn a_local_build_carries_the_commit_and_raises_the_version() {
     let s = sandbox(true);
     s.run(&[]);
     assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
-    assert!(s.version().contains("version = \"0.1.1\""));
+    assert_eq!(
+        s.version(),
+        "[package]\nversion = \"0.1.1\"\n\n[dependencies.x]\nversion = \"0.1.0\"\n"
+    );
     assert_eq!(
         fs::read_to_string(s.repo.join("Cargo.lock")).unwrap(),
         "lock 0.1.1\n"
@@ -139,6 +155,8 @@ fn the_version_raise_alone_is_not_dirty_but_an_untracked_file_is() {
     assert_eq!(s.shown(), format!("0.1.1+local.{}", s.head()));
     assert!(s.version().contains("version = \"0.1.1\""));
 
+    // 未追跡を表示しない設定でも、未追跡のファイルは変更に数える。
+    git(&s.repo, &["config", "status.showUntrackedFiles", "no"]);
     fs::write(s.repo.join("new.rs"), "").unwrap();
     s.run(&[("WHARFKEEP_NO_BUMP", "1")]);
     assert_eq!(s.shown(), format!("0.1.1+local.{}.dirty", s.head()));
@@ -149,6 +167,7 @@ fn the_release_mark_is_refused_outside_github_actions_before_anything_is_built()
     let s = sandbox(true);
     let out = s.run_in(&s.repo, &[("WHARFKEEP_RELEASE", "1")]);
     assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("WHARFKEEP_RELEASE=1"));
     assert!(!s.repo.join("target").exists());
 
     s.run(&[("WHARFKEEP_RELEASE", "1"), ("GITHUB_ACTIONS", "true")]);
@@ -173,5 +192,23 @@ fn a_case_different_path_keeps_the_commit_mark() {
     }
     let out = s.run_in(&other, &[("WHARFKEEP_NO_BUMP", "1")]);
     assert!(out.status.success(), "bundle.sh: {out:?}");
+    assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
+}
+
+#[test]
+fn a_git_dir_from_outside_is_ignored() {
+    let s = sandbox(true);
+    let other = sandbox(true);
+    // 同じ中身を同じ秒にコミットすると同じハッシュになるので、別のコミットにする。
+    git(
+        &other.repo,
+        &["commit", "-q", "--allow-empty", "-m", "other"],
+    );
+    assert_ne!(other.head(), s.head());
+    let git_dir = other.repo.join(".git");
+    s.run(&[
+        ("WHARFKEEP_NO_BUMP", "1"),
+        ("GIT_DIR", git_dir.to_str().unwrap()),
+    ]);
     assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
 }
