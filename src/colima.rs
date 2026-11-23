@@ -216,7 +216,9 @@ fn check_profile(p: &str) -> Result<(), ColimaError> {
         && !p.starts_with('-')
         && p.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && !p.chars().all(|c| c == '.');
+        && !p.chars().all(|c| c == '.')
+        // colima は先頭の `colima-` を外した名前で置き場を作る。空や `.` だけだとホームなどを指す。
+        && !short_name(p).chars().all(|c| c == '.');
     ok.then_some(())
         .ok_or_else(|| ColimaError::InvalidProfile(p.into()))
 }
@@ -239,6 +241,15 @@ pub fn same_instance(new: &str, existing: &str) -> bool {
 
 pub fn start_args(spec: &CreateSpec) -> Result<Vec<String>, ColimaError> {
     check_profile(&spec.profile)?;
+    // `colima-colima` は一覧に `colima`、`colima-default` は `default` と出る。colima はその名前を
+    // 既定のインスタンスと読むので、行の停止や削除が既定のインスタンスに向いてしまう。
+    let short = short_name(&spec.profile);
+    let aliases_default = ["colima", "default"]
+        .iter()
+        .any(|d| short.eq_ignore_ascii_case(d));
+    if aliases_default && !matches!(spec.profile.as_str(), "colima" | "default") {
+        return Err(ColimaError::InvalidProfile(spec.profile.clone()));
+    }
     if spec.cpus == 0 {
         return Err(ColimaError::InvalidCpus);
     }
@@ -679,7 +690,25 @@ mod tests {
     #[test]
     fn start_args_rejects_empty_or_invalid_profile() {
         for p in [
-            "", "a b", "../x", ".", "..", "a/b", "日本", "-h", "--force", "-",
+            "",
+            "a b",
+            "../x",
+            ".",
+            "..",
+            "a/b",
+            "日本",
+            "-h",
+            "--force",
+            "-",
+            // colima が外す接頭辞のあとが空や `.` だけだと、置き場がホームなどを指す。
+            "colima-",
+            "colima-.",
+            "colima-..",
+            // 一覧に `colima` や `default` と出て、行の操作が既定のインスタンスに向く。
+            "colima-colima",
+            "colima-default",
+            "colima-Default",
+            "Default",
         ] {
             let s = CreateSpec {
                 profile: p.into(),
@@ -690,7 +719,16 @@ mod tests {
                 "{p:?}"
             );
         }
-        for p in ["a", "A-z_0.9", "..a", "a..", "a-b"] {
+        for p in [
+            "a",
+            "A-z_0.9",
+            "..a",
+            "a..",
+            "a-b",
+            "default",
+            "colima",
+            "colima-dev",
+        ] {
             let s = CreateSpec {
                 profile: p.into(),
                 ..spec()
@@ -752,7 +790,7 @@ mod tests {
 
     #[test]
     fn simple_args_rejects_option_like_and_invalid_profiles() {
-        for p in ["-h", "--force", "", "a b", ".."] {
+        for p in ["-h", "--force", "", "a b", "..", "colima-", "colima-.."] {
             assert!(
                 matches!(
                     simple_args(Action::Delete, p),
