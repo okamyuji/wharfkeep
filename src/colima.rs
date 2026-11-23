@@ -248,7 +248,11 @@ pub fn start_args(spec: &CreateSpec) -> Result<Vec<String>, ColimaError> {
     let aliases_default = ["colima", "default"]
         .iter()
         .any(|d| short.eq_ignore_ascii_case(d));
-    if aliases_default && !matches!(spec.profile.as_str(), "colima" | "default") {
+    // colima は `colima-` を1回だけ外す（大文字と小文字を区別する）。`colima-colima-dev` は一覧に
+    // `colima-dev` と出て、その行の削除は colima がもう一度解決した `dev` を消す。
+    let double_prefix = short.starts_with("colima-");
+    if (aliases_default || double_prefix) && !matches!(spec.profile.as_str(), "colima" | "default")
+    {
         return Err(ColimaError::InvalidProfile(spec.profile.clone()));
     }
     if spec.cpus == 0 {
@@ -753,6 +757,9 @@ mod tests {
             "colima-default",
             "colima-Default",
             "Default",
+            // colima は `colima-` を1回だけ外すので、一覧に `colima-dev` と出る。行の削除が `dev` を消す。
+            "colima-colima-dev",
+            "colima-colima-default",
         ] {
             let s = CreateSpec {
                 profile: p.into(),
@@ -772,6 +779,7 @@ mod tests {
             "default",
             "colima",
             "colima-dev",
+            "colima-Colima-dev",
         ] {
             let s = CreateSpec {
                 profile: p.into(),
