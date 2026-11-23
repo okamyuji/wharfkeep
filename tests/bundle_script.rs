@@ -17,8 +17,8 @@ struct Sandbox {
     repo: PathBuf,
 }
 
-/// 利用者の git の設定（設定ファイルと、GIT_CONFIG_COUNT などの環境経由のもの）と、
-/// git の hook が渡す環境変数を読ませない。
+/// 利用者の git の設定（設定ファイル、GIT_CONFIG_COUNT などの環境経由のもの、
+/// ホームの既定の除外ファイル）と、git の hook が渡す環境変数を読ませない。
 fn isolate(cmd: &mut Command) -> &mut Command {
     for (k, _) in std::env::vars_os() {
         if k.to_string_lossy().starts_with("GIT_") {
@@ -28,8 +28,11 @@ fn isolate(cmd: &mut Command) -> &mut Command {
     for k in ["GITHUB_ACTIONS", "WHARFKEEP_RELEASE", "WHARFKEEP_NO_BUMP"] {
         cmd.env_remove(k);
     }
+    // 試験は macOS だけで走る（bundle.sh が PlistBuddy を使う）。/var/empty は空で書けない。
     cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", "/var/empty")
+        .env("XDG_CONFIG_HOME", "/var/empty")
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
