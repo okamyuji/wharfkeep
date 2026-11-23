@@ -222,3 +222,17 @@ fn a_work_tree_from_outside_is_ignored() {
     ]);
     assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
 }
+
+#[test]
+fn a_cdpath_does_not_move_the_build_to_another_project() {
+    let s = sandbox(true);
+    // CDPATH の先に scripts/ と Cargo.toml を持つ別のプロジェクトを置く。
+    let decoy = s.repo.with_file_name("decoy");
+    fs::create_dir_all(decoy.join("scripts")).unwrap();
+    let toml = "[package]\nversion = \"9.9.9\"\n";
+    fs::write(decoy.join("Cargo.toml"), toml).unwrap();
+    s.run(&[("CDPATH", decoy.to_str().unwrap())]);
+    assert_eq!(fs::read_to_string(decoy.join("Cargo.toml")).unwrap(), toml);
+    assert!(!decoy.join("target").exists());
+    assert_eq!(s.shown(), format!("0.1.0+local.{}", s.head()));
+}

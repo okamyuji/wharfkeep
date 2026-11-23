@@ -2,7 +2,8 @@
 # リリースビルドを target/wharfkeep.app に組む。
 # Cargo.toml の版は「次に組む .app の版」。組めたら patch を1つ上げ、次のビルドに備える。
 set -eu
-cd "$(dirname "$0")/.."
+# CDPATH があると相対の cd が別のプロジェクトへ移り、その Cargo.toml を書き換えてしまう。
+CDPATH= cd -- "$(dirname -- "$0")/.."
 # [package] の版は行頭の version。依存の version はインラインの表の中なので当たらない。
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
