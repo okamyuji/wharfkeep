@@ -17,7 +17,7 @@ mod restore;
 
 use proc::*;
 
-use crate::install::{is_running, string_after};
+use crate::install::{Setup, hand_over, is_running};
 use std::fs;
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};

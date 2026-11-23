@@ -465,7 +465,17 @@ impl Ctx {
     }
 
     pub(super) fn web_logs_and_shell(&self, gpid: &str) {
-        self.press(gpid, "button", &format!("Logs {WEB}"));
+        // 行の一覧はRunの欄の下のスクロールの中にある。欄を閉じて行を見える所へ上げ、
+        // GUIが次の一覧を受け取って行を描くまで待ってから押す。
+        self.press(gpid, "button", "Run a container");
+        let logs = format!("Logs {WEB}");
+        self.see(
+            30,
+            gpid,
+            &format!("button {logs}"),
+            &format!("行の「{logs}」がAXで見えません"),
+        );
+        self.press(gpid, "button", &logs);
         self.see(15, gpid, "checkbox Follow", "ログの「Follow」が出ません");
         let logged = self.wait(30, || self.contents(gpid).contains("GET / HTTP/1.1"));
         self.need(logged, || "ログに curl のアクセスが出ません".into());

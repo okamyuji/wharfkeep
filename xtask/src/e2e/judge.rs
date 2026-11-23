@@ -84,6 +84,19 @@ fn strip_location(e: &str) -> &str {
     cut.map_or(e, |i| &e[..i])
 }
 
+/// AXの木の要素を、場所を外した名前の並びにする。`limit`字を超えたら切り詰める。
+pub fn names(contents: &str, limit: usize) -> String {
+    let all = elements(contents)
+        .map(|e| strip_location(e).trim())
+        .filter(|e| !e.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    match all.char_indices().nth(limit) {
+        Some((cut, _)) => format!("{}…", &all[..cut]),
+        None => all,
+    }
+}
+
 /// 「x y w h」。メニューバー項目の位置と大きさ。
 pub fn parse_geom(s: &str) -> Option<[i32; 4]> {
     let v: Vec<i32> = s
@@ -354,5 +367,15 @@ mod tests {
         );
         assert_eq!(stop_reason(s(0), 10, false), Some("中断されました".into()));
         assert_eq!(stop_reason(s(99), 10, false), Some("中断されました".into()));
+    }
+
+    #[test]
+    fn names_lists_elements_without_their_location() {
+        let c = "button Stop web of UI element 3 of group 1 of window wharfkeep, static text Running of UI element 4 of group 1 of window wharfkeep, ";
+        assert_eq!(names(c, 100), "button Stop web | static text Running");
+        assert_eq!(names(c, 6), "button…");
+        assert_eq!(names(c, 37), "button Stop web | static text Running");
+        assert_eq!(names("", 10), "");
+        assert_eq!(names("ボタン 停止", 3), "ボタン…");
     }
 }

@@ -29,7 +29,7 @@ fn parse_args(args: &[String]) -> Result<Source, String> {
 }
 
 /// 置き場と道具。試験は一時ディレクトリと偽の道具に差し替える。
-struct Setup {
+pub(crate) struct Setup {
     apps: PathBuf,
     home: PathBuf,
     service: String,
@@ -54,7 +54,7 @@ impl Setup {
     }
 
     /// この利用者の/Applicationsとlaunchd。
-    fn system() -> Result<Setup, String> {
+    pub(crate) fn system() -> Result<Setup, String> {
         let home = std::env::home_dir().ok_or("ホームディレクトリが分かりません")?;
         let out = Command::new("/usr/bin/id")
             .arg("-u")
@@ -206,6 +206,14 @@ fn install(s: &Setup, app: &Path) -> Result<String, String> {
     stop_daemon(s, &["daemon.lock"])?;
     replace(&staging, &s.app()).map_err(|e| format!("{}: {e}", s.app().display()))?;
     check(Command::new(&s.open).arg(s.app()))?;
+    hand_over(s)?;
+    Ok(shown)
+}
+
+/// /Applicationsの.appを開いたあとで、そのデーモンをlaunchdに渡し、渡せたかを確かめる。e2eの後片付けも使う。
+/// 開いた.appがロックを取るので、launchdが起こした方はロックを取れずに0で終わり、ジョブはrunningにならない。
+/// そこで開いた方を止め、launchdから起こし直す。
+pub(crate) fn hand_over(s: &Setup) -> Result<(), String> {
     let exe = s.exe();
     // 前の導入のplistが同じ場所を指していることがあるので、bootoutで外したジョブが読み込まれ直すまで待つ。
     // 読み込まれ直せば、開いた.appがロックを取り、plistを書き直して登録し終えている。
@@ -223,8 +231,7 @@ fn install(s: &Setup, app: &Path) -> Result<String, String> {
         &print(s),
         fs::read_to_string(s.plist()).ok().as_deref(),
         &exe,
-    )?;
-    Ok(shown)
+    )
 }
 
 fn uninstall(s: &Setup) -> Result<(), String> {

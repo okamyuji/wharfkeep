@@ -93,7 +93,7 @@ impl Ctx {
         let _ = ok(Command::new("colima").args(["delete", ISO, "--force", "--data"]));
     }
 
-    /// /Applications/wharfkeep.appがあれば、試験のデーモンを止めてそちらを一度起動し、ログイン時の起動先を戻す。
+    /// /Applications/wharfkeep.appがあれば、試験のデーモンを止めてそちらを一度起動し、launchdへ渡して起動先を戻す。
     pub(super) fn back_to_applications(&self) -> bool {
         let app = Path::new(APPLICATIONS_APP);
         if !app.exists() {
@@ -103,17 +103,11 @@ impl Ctx {
         let _ = ok(Command::new("pkill").args(["-fx", &format!("{}( daemon)?", self.exe_re)]));
         self.wait(10, || self.daemons_are(0));
         let _ = ok(Command::new("open").arg(app));
-        let exe = app.join("Contents/MacOS/wharfkeep");
-        let back = self.wait(20, || {
-            fs::read_to_string(&self.plist)
-                .is_ok_and(|p| string_after(&p, "ProgramArguments") == exe.to_str())
-        });
-        if !back {
-            eprintln!(
-                "e2e: 失敗: ログイン時の起動先が {} に戻りません",
-                exe.display()
-            );
+        // installと同じく、開いた.appのデーモンをlaunchdへ渡し、runningと起動先を確かめる。
+        let handed = Setup::system().and_then(|s| hand_over(&s));
+        if let Err(e) = &handed {
+            eprintln!("e2e: 失敗: ログイン時の起動を {APPLICATIONS_APP} へ戻せません: {e}");
         }
-        back
+        handed.is_ok()
     }
 }

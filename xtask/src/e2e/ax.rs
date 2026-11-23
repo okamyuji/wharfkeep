@@ -191,7 +191,9 @@ if not done then error \"{what} が見つかりません\""
 
     pub(super) fn press(&self, pid: &str, kind: &str, name: &str) {
         let pressed = self.ax_press(pid, kind, name);
-        self.need(pressed, || format!("「{name}」を押せません"));
+        self.need(pressed, || {
+            format!("「{name}」を押せません。{}", self.tree(pid))
+        });
     }
 
     pub(super) fn front_pid(&self) -> String {
@@ -237,7 +239,12 @@ if not done then error \"{what} が見つかりません\""
     /// 要素が出るまで待つ。出なければ`msg`で失敗する。
     pub(super) fn see(&self, secs: u64, gpid: &str, needle: &str, msg: &str) {
         let seen = self.wait(secs, || self.has_element(gpid, needle));
-        self.need(seen, || msg.to_string());
+        self.need(seen, || format!("{msg}。{}", self.tree(gpid)));
+    }
+
+    /// 失敗の文に添える、今のAXの木の要素の名前。次に失敗したとき、名前の違いか、まだ無いのかを見分ける。
+    pub(super) fn tree(&self, pid: &str) -> String {
+        format!("AXの要素: {}", judge::names(&self.contents(pid), 3000))
     }
 
     // ---- 画面 ----
