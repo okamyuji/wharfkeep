@@ -1,7 +1,7 @@
 //! ボリューム画面。一覧、作成、行ごとのごみ箱、未使用の整理。
 
 use super::{cleanup_button, inspect_button, inspect_panel, size_text, trash_button};
-use crate::docker::check_name;
+use crate::docker::actions::check_volume_name;
 use crate::gui::bridge::{Bridge, Cleanup, Request, ResourceKind, create_volume_key, volume_key};
 use crate::gui::confirm::{Confirm, PendingAction};
 use crate::gui::state::GuiState;
@@ -109,7 +109,7 @@ fn create_form(
     let key = create_volume_key(profile);
     let busy = state.busy_ops.contains(&key);
     let name = state.volumes.name.trim().to_string();
-    let check = check_name(&name);
+    let check = check_volume_name(&name);
     ui.horizontal(|ui| {
         let caption = ui.label(Msg::NewVolume.text(lang));
         ui.add(egui::TextEdit::singleline(&mut state.volumes.name).desired_width(260.0))

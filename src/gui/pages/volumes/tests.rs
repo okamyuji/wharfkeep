@@ -190,6 +190,20 @@ fn create_form_explains_a_bad_name() {
 }
 
 #[test]
+fn create_form_takes_a_255_character_name_and_refuses_256() {
+    let (mut h, mut ends) = harness(Lang::En, volumes_state(vec![]));
+    h.state_mut().0.volumes.name = "v".repeat(255);
+    h.run_steps(4);
+    assert!(!h.get_by_label("Create").accesskit_node().is_disabled());
+    assert!(h.query_by_label_contains("too long").is_none());
+    h.state_mut().0.volumes.name = "v".repeat(256);
+    h.run_steps(4);
+    assert!(h.get_by_label("Create").accesskit_node().is_disabled());
+    h.get_by_label_contains("Volume name is too long (255 characters at most)");
+    assert!(requests(&mut ends).is_empty());
+}
+
+#[test]
 fn volume_inspect_asks_by_name() {
     let (mut h, mut ends) = harness(
         Lang::En,

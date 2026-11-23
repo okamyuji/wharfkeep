@@ -127,7 +127,16 @@ pub fn parse_port_map(s: &str) -> Result<PortMap, DockerError> {
 }
 
 /// local ドライバはボリューム名をそのままディレクトリ名にするので、Linux の NAME_MAX に合わせる。
-const VOLUME_NAME_MAX: usize = 255;
+pub(crate) const VOLUME_NAME_MAX: usize = 255;
+
+/// ボリュームの名前。形は `check_name`、長さは `VOLUME_NAME_MAX` まで。
+pub(crate) fn check_volume_name(name: &str) -> Result<(), DockerError> {
+    check_name(name)?;
+    if name.len() > VOLUME_NAME_MAX {
+        return Err(DockerError::VolumeNameTooLong);
+    }
+    Ok(())
+}
 
 /// 画面で見えないか、前後の文字の向きを変える書式文字（Unicode の Cf のうち入力に紛れやすいもの）。
 /// 入力欄で見た値と、実際に渡る値が違って見えるのを防ぐ。
@@ -180,8 +189,7 @@ pub fn parse_mount(s: &str) -> Result<Mount, DockerError> {
     match parts[..] {
         [source, target, ..]
             if parts.len() <= 3
-                && (source.starts_with('/')
-                    || (source.len() <= VOLUME_NAME_MAX && check_name(source).is_ok()))
+                && (source.starts_with('/') || check_volume_name(source).is_ok())
                 && target.starts_with('/') =>
         {
             Ok(Mount {
@@ -543,6 +551,19 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn volume_names_are_limited_to_255_characters() {
+        assert_eq!(check_volume_name(&"v".repeat(255)), Ok(()));
+        assert_eq!(
+            check_volume_name(&"v".repeat(256)),
+            Err(DockerError::VolumeNameTooLong)
+        );
+        assert_eq!(
+            check_volume_name("a/b"),
+            Err(DockerError::InvalidId("a/b".into()))
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! ボリュームとネットワークの操作。
 
 use super::{reclaimed, to_json};
+use crate::docker::actions::check_volume_name;
 use crate::docker::{DockerError, Engine, check_name};
 use bollard::models::{NetworkCreateRequest, VolumeCreateRequest};
 use bollard::query_parameters::{
@@ -28,6 +29,7 @@ impl NetDriver {
 
 impl Engine {
     pub async fn create_volume(&self, name: &str) -> Result<(), DockerError> {
+        check_volume_name(name)?;
         let req = VolumeCreateRequest {
             name: Some(name.to_string()),
             ..Default::default()
@@ -121,6 +123,20 @@ mod tests {
         assert_eq!(body_of(&seen[0])["Name"], "data-1");
         let f = fake_docker(vec![]);
         assert!(f.engine.create_volume("data-1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_volume_refuses_a_name_over_255_characters_before_calling_docker() {
+        let f = fake_docker(vec![]);
+        assert_eq!(
+            f.engine.create_volume(&"v".repeat(256)).await,
+            Err(DockerError::VolumeNameTooLong)
+        );
+        assert_eq!(
+            f.engine.create_volume("a/b").await,
+            Err(DockerError::InvalidId("a/b".into()))
+        );
+        assert!(f.seen().is_empty());
     }
 
     #[tokio::test]

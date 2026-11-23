@@ -199,6 +199,7 @@ pub enum Msg {
     FieldCommand,
     DockerEnv,
     DockerMount,
+    DockerVolumeNameTooLong,
     RowRename,
     FieldNewName,
     ApplyRename,
@@ -213,7 +214,7 @@ pub enum Msg {
 
 impl Msg {
     #[cfg(test)]
-    const ALL: [Msg; 150] = [
+    const ALL: [Msg; 151] = [
         Msg::OpenWindow,
         Msg::Quit,
         Msg::UnknownSubcommand,
@@ -354,6 +355,7 @@ impl Msg {
         Msg::FieldCommand,
         Msg::DockerEnv,
         Msg::DockerMount,
+        Msg::DockerVolumeNameTooLong,
         Msg::RowRename,
         Msg::FieldNewName,
         Msg::ApplyRename,
@@ -783,6 +785,11 @@ const TEXTS: &[(Msg, &str, &str)] = &[
         Msg::DockerMount,
         "invalid mount (use SOURCE:/container/path[:ro])",
         "マウントの形が不正です（ソース:/コンテナ内のパス[:ro] で書いてください）",
+    ),
+    (
+        Msg::DockerVolumeNameTooLong,
+        "Volume name is too long ({max} characters at most)",
+        "ボリュームの名前が長すぎます（{max} 字まで）",
     ),
     (Msg::RowRename, "Rename", "名前を変更"),
     (Msg::FieldNewName, "New name", "新しい名前"),

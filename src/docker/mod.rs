@@ -57,6 +57,7 @@ pub enum DockerError {
     InvalidMount(String),
     /// 名前・ID・イメージ参照が、URL の一部として安全な形ではない。
     InvalidId(String),
+    VolumeNameTooLong,
 }
 
 impl DockerError {
@@ -69,6 +70,8 @@ impl DockerError {
             Self::InvalidEnv(s) => format!("{}: {s:?}", t(Msg::DockerEnv)),
             Self::InvalidMount(s) => format!("{}: {s:?}", t(Msg::DockerMount)),
             Self::InvalidId(s) => format!("{}: {s:?}", t(Msg::DockerInvalidId)),
+            Self::VolumeNameTooLong => t(Msg::DockerVolumeNameTooLong)
+                .replace("{max}", &actions::VOLUME_NAME_MAX.to_string()),
         }
     }
 }
@@ -838,6 +841,19 @@ mod tests {
         assert!(f.engine.tag("x:1", "App", "v1").await.is_err());
         assert!(f.engine.tag("x:1", "app", "a b").await.is_err());
         assert!(f.seen().is_empty());
+    }
+
+    #[test]
+    fn volume_name_too_long_message_is_in_both_languages() {
+        let e = DockerError::VolumeNameTooLong;
+        assert_eq!(
+            e.message(Lang::En),
+            "Volume name is too long (255 characters at most)"
+        );
+        assert_eq!(
+            e.message(Lang::Ja),
+            "ボリュームの名前が長すぎます（255 字まで）"
+        );
     }
 
     #[test]
