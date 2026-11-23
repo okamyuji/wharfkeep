@@ -1,6 +1,7 @@
 # wharfkeep
 
 [![CI](https://github.com/okamyuji/wharfkeep/actions/workflows/ci.yml/badge.svg)](https://github.com/okamyuji/wharfkeep/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/okamyuji/wharfkeep)](https://github.com/okamyuji/wharfkeep/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A macOS menu bar app for watching and controlling [Colima](https://github.com/abiosoft/colima) and its Docker containers, written in Rust.
@@ -41,6 +42,16 @@ Cleaning up images. Every delete asks for confirmation first.
 
 ## Installation
 
+Download `wharfkeep-<version>-macos-arm64.zip` from the [latest release](https://github.com/okamyuji/wharfkeep/releases/latest), unzip it, and move `wharfkeep.app` to `/Applications`. The app is ad-hoc signed and not notarized. If macOS blocks it, run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/wharfkeep.app
+```
+
+When a push to `main` passes CI and the version in `Cargo.toml` has no release yet, CI builds the app and publishes that version as a new release.
+
+### Build from source
+
 Build the app bundle and copy it to `/Applications`:
 
 ```sh
@@ -51,7 +62,7 @@ cp -R target/wharfkeep.app /Applications/
 open /Applications/wharfkeep.app
 ```
 
-`scripts/bundle.sh` stamps the bundle with the version in `Cargo.toml`, then raises the patch number in `Cargo.toml` and `Cargo.lock` for the next build.
+`scripts/bundle.sh` stamps the bundle with the version in `Cargo.toml`, then raises the patch number in `Cargo.toml` and `Cargo.lock` for the next build. Set `WHARFKEEP_NO_BUMP=1` to build without raising the version.
 
 The first launch registers the app in `/Applications` to start at login. If an older copy is already running, choose **Quit** from its menu bar item before you open the new one.
 

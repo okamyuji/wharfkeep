@@ -21,6 +21,11 @@ done
 cp target/release/wharfkeep "$app/Contents/MacOS/wharfkeep"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
+# release の仕事は組んだ版そのものを公開するので、版を上げない。
+if [ "${WHARFKEEP_NO_BUMP:-0}" = 1 ]; then
+  echo "$app ($version)"
+  exit 0
+fi
 next=$(echo "$version" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 + 1 }')
 sed -i '' "1,/^version = /s/^version = \"$version\"$/version = \"$next\"/" Cargo.toml
 # CIは --locked で試験するので、Cargo.lock の wharfkeep の版も合わせる。
