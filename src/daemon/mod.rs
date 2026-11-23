@@ -10,7 +10,7 @@ use crate::i18n::{Lang, Msg};
 use crate::paths;
 use crate::snapshot::{self, Snapshot};
 use objc2::MainThreadMarker;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::runtime::Handle;
@@ -53,24 +53,21 @@ impl App {
 
     fn on_menu(&mut self, event_loop: &ActiveEventLoop, entry: MenuEntry) {
         match entry {
-            MenuEntry::Instance { name, running } => {
-                let action = if running { Action::Stop } else { Action::Start };
-                match colima::simple_args(action, &name) {
-                    Ok(args) => {
-                        self.rt.spawn(monitor::run_action(
-                            self.colima.clone(),
-                            args,
-                            self.wake.clone(),
-                            self.lang,
-                        ));
-                    }
-                    Err(e) => eprintln!(
-                        "wharfkeep: {}: {}",
-                        Msg::TrayActionFailed.text(self.lang),
-                        e.message(self.lang)
-                    ),
+            MenuEntry::Instance { name, running } => match tray_args(&name, running) {
+                Ok(args) => {
+                    self.rt.spawn(monitor::run_action(
+                        self.colima.clone(),
+                        args,
+                        self.wake.clone(),
+                        self.lang,
+                    ));
                 }
-            }
+                Err(e) => eprintln!(
+                    "wharfkeep: {}: {}",
+                    Msg::TrayActionFailed.text(self.lang),
+                    e.message(self.lang)
+                ),
+            },
             MenuEntry::OpenWindow => {
                 if let Err(e) = launch_gui() {
                     eprintln!("wharfkeep: {}: {e}", Msg::OpenWindowFailed.text(self.lang));
@@ -80,23 +77,39 @@ impl App {
                 self.start_at_login = !self.start_at_login;
                 let (on, path, lang) = (self.start_at_login, self.settings_path.clone(), self.lang);
                 // launchctlを呼ぶので、AppKitのスレッドでは待たない。
-                self.rt.spawn_blocking(move || {
-                    if let Err(e) =
-                        autostart::save_settings(&path, &autostart::Settings { autostart: on })
-                    {
-                        eprintln!(
-                            "wharfkeep: {}: {}: {e}",
-                            Msg::SettingsSaveFailed.text(lang),
-                            path.display()
-                        );
-                    }
-                    apply_autostart(on, lang);
-                });
+                self.rt
+                    .spawn_blocking(move || save_autostart(&path, on, lang));
                 self.refresh();
             }
             MenuEntry::Quit => event_loop.exit(),
         }
     }
+}
+
+/// メニューのインスタンスの行が選ばれたときのcolimaの引数。動いていれば止め、止まっていれば起動する。
+fn tray_args(name: &str, running: bool) -> Result<Vec<String>, colima::ColimaError> {
+    let action = if running { Action::Stop } else { Action::Start };
+    colima::simple_args(action, name)
+}
+
+/// 設定を保存し、ログイン時の起動の登録をそれに合わせる。保存に失敗しても登録は合わせる。
+fn save_autostart(path: &Path, on: bool, lang: Lang) {
+    if let Err(e) = autostart::save_settings(path, &autostart::Settings { autostart: on }) {
+        eprintln!(
+            "wharfkeep: {}: {}: {e}",
+            Msg::SettingsSaveFailed.text(lang),
+            path.display()
+        );
+    }
+    apply_autostart(on, lang);
+}
+
+/// 起動時の準備。古い一時ファイルを消し、ログイン時に起動するかを設定から読む。
+fn prepare(dir: &Path, settings_path: &Path, lang: Lang) -> bool {
+    if let Err(e) = snapshot::remove_stale_temps(dir) {
+        eprintln!("wharfkeep: {}: {e}", Msg::TempCleanupFailed.text(lang));
+    }
+    autostart::load_settings(settings_path).autostart
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -145,11 +158,8 @@ fn apply_autostart(on: bool, lang: Lang) {
 pub fn run() -> Result<(), String> {
     let lang = Lang::detect();
     let dir = paths::data_dir().ok_or_else(|| Msg::NoHomeDir.text(lang).to_string())?;
-    if let Err(e) = snapshot::remove_stale_temps(&dir) {
-        eprintln!("wharfkeep: {}: {e}", Msg::TempCleanupFailed.text(lang));
-    }
     let settings_path = dir.join("settings.json");
-    let start_at_login = autostart::load_settings(&settings_path).autostart;
+    let start_at_login = prepare(&dir, &settings_path, lang);
 
     #[allow(unused_mut)]
     let mut builder = EventLoop::with_user_event();
@@ -213,4 +223,61 @@ pub fn run() -> Result<(), String> {
     event_loop
         .run_app(&mut app)
         .map_err(|e| format!("{}: {e}", Msg::EventLoopStopped.text(lang)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::time::Duration;
+
+    #[test]
+    fn tray_args_stop_a_running_instance_and_start_a_stopped_one() {
+        assert_eq!(tray_args("dev", true).unwrap(), ["stop", "dev"]);
+        assert_eq!(tray_args("dev", false).unwrap(), ["start", "dev"]);
+    }
+
+    #[test]
+    fn tray_args_refuse_a_name_colima_would_misread() {
+        assert!(tray_args("-h", true).is_err());
+    }
+
+    #[test]
+    fn prepare_reads_the_login_setting_and_removes_stale_temps() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        autostart::save_settings(&settings, &autostart::Settings { autostart: false }).unwrap();
+        let stale = dir.path().join("state.json.1.tmp");
+        File::create(&stale)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .unwrap();
+        assert!(!prepare(dir.path(), &settings, Lang::En));
+        assert!(!stale.exists());
+    }
+
+    #[test]
+    fn prepare_falls_back_to_login_on_when_the_dir_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        assert!(prepare(&missing, &missing.join("settings.json"), Lang::En));
+    }
+
+    #[test]
+    fn save_autostart_writes_the_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        save_autostart(&settings, false, Lang::En);
+        assert!(!autostart::load_settings(&settings).autostart);
+        save_autostart(&settings, true, Lang::En);
+        assert!(autostart::load_settings(&settings).autostart);
+    }
+
+    #[test]
+    fn save_autostart_survives_an_unwritable_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("missing/settings.json");
+        save_autostart(&settings, false, Lang::En);
+        assert!(!settings.exists());
+    }
 }

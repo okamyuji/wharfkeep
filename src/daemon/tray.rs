@@ -9,8 +9,9 @@ use objc2::{
     AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSBitmapFormat, NSBitmapImageRep, NSControlStateValueOn, NSDeviceRGBColorSpace, NSImage,
-    NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSBitmapFormat, NSBitmapImageRep, NSControlStateValue, NSControlStateValueOff,
+    NSControlStateValueOn, NSDeviceRGBColorSpace, NSImage, NSMenu, NSMenuItem, NSStatusBar,
+    NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSObject, NSSize, NSString};
 use std::cell::RefCell;
@@ -110,6 +111,35 @@ pub fn icon_state(s: &Snapshot) -> IconState {
     } else {
         IconState::Idle
     }
+}
+
+/// メニューの1行の見た目。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MenuItemSpec {
+    pub(crate) separator_before: bool,
+    pub(crate) title: String,
+    pub(crate) state: NSControlStateValue,
+}
+
+/// インスタンスの行と固定の項目のあいだに区切りを入れ、ログイン時の起動にだけチェックを付ける。
+pub(crate) fn menu_items(
+    entries: &[MenuEntry],
+    start_at_login: bool,
+    lang: Lang,
+) -> Vec<MenuItemSpec> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| MenuItemSpec {
+            separator_before: *e == MenuEntry::OpenWindow && i > 0,
+            title: e.title(lang),
+            state: if *e == MenuEntry::StartAtLogin && start_at_login {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            },
+        })
+        .collect()
 }
 
 /// `ICON_PIXELS`×`ICON_PIXELS`の輸送用コンテナの形のRGBA（乗算済みでないアルファ）。画像ファイルを同梱しないため描く。
@@ -231,8 +261,11 @@ impl StatusItem {
     fn rebuild_menu(&self, entries: &[MenuEntry], start_at_login: bool) {
         self.menu.removeAllItems();
         *self.target.ivars().entries.borrow_mut() = entries.to_vec();
-        for (i, e) in entries.iter().enumerate() {
-            if *e == MenuEntry::OpenWindow && i > 0 {
+        for (i, spec) in menu_items(entries, start_at_login, self.lang)
+            .into_iter()
+            .enumerate()
+        {
+            if spec.separator_before {
                 self.menu.addItem(&NSMenuItem::separatorItem(self.mtm));
             }
             // SAFETY: `mtm`がメインスレッドを保証する。titleとkeyEquivalentは生きているNSStringで、
@@ -240,7 +273,7 @@ impl StatusItem {
             let item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     self.mtm.alloc(),
-                    &NSString::from_str(&e.title(self.lang)),
+                    &NSString::from_str(&spec.title),
                     Some(sel!(choose:)),
                     &NSString::new(),
                 )
@@ -250,9 +283,7 @@ impl StatusItem {
             // 持ち主は`self.target`で、StatusItemが生きている間は解放されない。
             unsafe { item.setTarget(Some(&self.target)) };
             item.setTag(i as isize);
-            if *e == MenuEntry::StartAtLogin && start_at_login {
-                item.setState(NSControlStateValueOn);
-            }
+            item.setState(spec.state);
             self.menu.addItem(&item);
         }
     }
@@ -338,6 +369,63 @@ mod tests {
             containers,
             ..Default::default()
         })
+    }
+
+    fn spec(separator_before: bool, title: &str, state: NSControlStateValue) -> MenuItemSpec {
+        MenuItemSpec {
+            separator_before,
+            title: title.into(),
+            state,
+        }
+    }
+
+    #[test]
+    fn menu_items_separate_instances_from_the_fixed_items_and_check_login() {
+        let entries = [
+            MenuEntry::Instance {
+                name: "default".into(),
+                running: true,
+            },
+            MenuEntry::OpenWindow,
+            MenuEntry::StartAtLogin,
+            MenuEntry::Quit,
+        ];
+        assert_eq!(
+            menu_items(&entries, true, Lang::En),
+            [
+                spec(false, "Stop default", NSControlStateValueOff),
+                spec(true, "Open Window", NSControlStateValueOff),
+                spec(false, "Start at Login", NSControlStateValueOn),
+                spec(false, "Quit", NSControlStateValueOff),
+            ]
+        );
+    }
+
+    #[test]
+    fn menu_items_put_no_separator_on_top_and_leave_login_unchecked_when_off() {
+        let entries = [
+            MenuEntry::OpenWindow,
+            MenuEntry::StartAtLogin,
+            MenuEntry::Quit,
+        ];
+        assert_eq!(
+            menu_items(&entries, false, Lang::En),
+            [
+                spec(false, "Open Window", NSControlStateValueOff),
+                spec(false, "Start at Login", NSControlStateValueOff),
+                spec(false, "Quit", NSControlStateValueOff),
+            ]
+        );
+    }
+
+    #[test]
+    fn menu_items_check_only_the_login_item() {
+        let entries = [MenuEntry::Quit, MenuEntry::StartAtLogin];
+        let states: Vec<_> = menu_items(&entries, true, Lang::En)
+            .into_iter()
+            .map(|s| s.state)
+            .collect();
+        assert_eq!(states, [NSControlStateValueOff, NSControlStateValueOn]);
     }
 
     #[test]

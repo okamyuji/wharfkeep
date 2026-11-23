@@ -2,6 +2,11 @@
 # 次の項目は AppKit・eframe・子プロセス起動への配線で、scripts/e2e.sh（二度目の Open Window、
 # Start daemon、サイドバーの操作）で確かめる。paint_barは色帯を塗るだけで、行の色帯はe2eのスクリーンショット
 # （en-5r-row-*、ja-5-gui）で確かめる。
+# デーモンのApp::on_menuは選ばれた項目を各処理へ振り分けるだけで、判断はtray_argsとsave_autostartにある。
+# 4つの項目はe2eで押す（Open Window、Stop default と Start default、ログイン時の起動、Quit）。
+# daemon::run（Result<(), String>を返すrun）はイベントループ、tokio、監視スレッドを組む配線で、
+# e2eの各段がtarget/wharfkeep.appのデーモンを起動して確かめる。StatusItem::rebuild_menuはmenu_itemsの結果を
+# NSMenuへ並べるだけで、e2eのchoose_menu_itemが項目を名前で選んで確かめる。
 exclude_re = [
   "replace open_in_terminal -> io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
   "replace raise_running -> bool with",
@@ -11,4 +16,8 @@ exclude_re = [
   "replace run -> eframe::Result with",
   "replace paint_bar with \\(\\)",
   "replace <impl eframe::App for App>::ui with",
+  "in App::on_menu$",
+  "replace App::on_menu with \\(\\)",
+  "replace run -> Result<\\(\\), String> with",
+  "replace StatusItem::rebuild_menu with \\(\\)",
 ]
