@@ -379,6 +379,8 @@ mod tests {
                 instance("colima-dev", InstanceStatus::Running),
                 instance("dev", InstanceStatus::Stopped),
                 instance("colima", InstanceStatus::Stopped),
+                instance("colimax", InstanceStatus::Stopped),
+                instance("-x", InstanceStatus::Stopped),
             ],
             vec![],
         );
@@ -387,6 +389,10 @@ mod tests {
             [
                 MenuEntry::Instance {
                     name: "dev".into(),
+                    running: false
+                },
+                MenuEntry::Instance {
+                    name: "colimax".into(),
                     running: false
                 },
                 MenuEntry::OpenWindow,
