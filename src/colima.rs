@@ -230,10 +230,11 @@ pub fn short_name(p: &str) -> &str {
     }
 }
 
-/// 作ろうとする名前が既存のインスタンスと同じものを指すか。macOS の既定のファイルシステムは
-/// 大文字と小文字を区別しないので、colima の置き場 `~/.colima/<名前>` が重なる名前も同じと見る。
+/// 作ろうとする名前が既存のインスタンスと同じものを指すか。`colima list` は解決後の名前を出すので、
+/// 既存の側はそのまま比べる。macOS の既定のファイルシステムは大文字と小文字を区別しないので、
+/// colima の置き場 `~/.colima/<名前>` が重なる名前も同じと見る。
 pub fn same_instance(new: &str, existing: &str) -> bool {
-    short_name(new).eq_ignore_ascii_case(short_name(existing))
+    short_name(new).eq_ignore_ascii_case(existing)
 }
 
 pub fn start_args(spec: &CreateSpec) -> Result<Vec<String>, ColimaError> {
@@ -517,6 +518,7 @@ mod tests {
             ("colima", "default"),
             ("colima-default", "default"),
             ("OLD", "old"),
+            ("colima-colima", "colima"),
         ] {
             assert!(same_instance(new, existing), "{new} {existing}");
         }
