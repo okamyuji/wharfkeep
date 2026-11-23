@@ -3,17 +3,21 @@ use super::*;
 
 impl Ctx {
     /// 試験の後は利用者の環境に合わせ、自動起動を有効のままlaunchdのデーモンを動かしておく。
-    /// 2度目以降の呼び出し（上限の見張りと失敗が重なったとき）は何もしない。真ならログイン時の起動先を戻せた。
+    /// 真ならログイン時の起動先を戻せた。見張りと失敗が重なったときは、先の片付けが終わるまで待って同じ結果を返す。
+    /// 片付けの中からfailを呼ぶと同じスレッドでロックを取り直して止まるので、ここから先ではfailを呼ばない。
     pub(super) fn restore(&self) -> bool {
-        if self.restored.swap(true, Ordering::SeqCst) {
-            return true;
+        let mut result = self.restored.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = *result {
+            return r;
         }
         self.restore_daemon();
         self.restore_login_item();
         self.restore_colima();
         self.restore_row();
         self.restore_iso();
-        self.back_to_applications()
+        let r = self.back_to_applications();
+        *result = Some(r);
+        r
     }
 
     pub(super) fn restore_daemon(&self) {

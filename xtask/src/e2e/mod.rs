@@ -21,6 +21,7 @@ use crate::install::{is_running, string_after};
 use std::fs;
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -55,24 +56,46 @@ struct Ctx {
     iso_created: AtomicBool,
     iso_sock: Mutex<Option<String>>,
     stage: Mutex<String>,
-    restored: AtomicBool,
+    /// 後片付けの結果。片付けている間はロックを持ち、ほかの呼び出しを待たせる。
+    restored: Mutex<Option<bool>>,
 }
 
+/// 段を走らせる子プロセスの印。
+const CHILD: &str = "WHARFKEEP_E2E_CHILD";
+
 pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
-    let ctx = start(root, args)?;
+    crate::install::no_args(args).and_then(|()| match std::env::var_os(CHILD) {
+        None => supervise(),
+        Some(_) => run_stages(root),
+    })
+}
+
+/// 端末のCtrl-Cは前面のプロセスグループに届く。段は別のグループの子で走らせ、
+/// 親が先に終わったら子が後片付けをしてから終わる。
+fn supervise() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("xtask の場所が分かりません: {e}"))?;
+    let status = Command::new(exe)
+        .arg("e2e")
+        .env(CHILD, "1")
+        .process_group(0)
+        .status()
+        .map_err(|e| format!("e2e の子プロセスを起動できません: {e}"))?;
+    judge::child_outcome(status.code())
+}
+
+fn run_stages(root: &Path) -> Result<(), String> {
+    let ctx = start(root)?;
     let done = catch_unwind(AssertUnwindSafe(|| ctx.stages())).is_ok();
     let restored = ctx.restore();
     judge::outcome(done, restored, &ctx.current())
         .map(|m| println!("{m}（画面は {}）", ctx.out.display()))
 }
 
-/// 上限の見張りとcaffeinateを置き、段に入れる状態にする。
-fn start(root: &Path, args: &[String]) -> Result<Arc<Ctx>, String> {
-    let limit = crate::install::no_args(args)
-        .and_then(|()| judge::limit_secs(std::env::var("E2E_LIMIT").ok().as_deref()))?;
-    let ctx = Arc::new(Ctx::new(root)?);
-    ctx.preflight();
-    watchdog(Arc::clone(&ctx), limit);
+/// 事前の確かめを通してから、見張りとcaffeinateを置く。確かめで止まるときは何も片付けない。
+fn start(root: &Path) -> Result<Arc<Ctx>, String> {
+    let limit = judge::limit_secs(std::env::var("E2E_LIMIT").ok().as_deref())?;
+    let ctx = Arc::new(Ctx::new(root).and_then(|c| c.preflight().map(|()| c))?);
+    watchdog(Arc::clone(&ctx), limit, std::os::unix::process::parent_id());
     // 実行中に画面が消えてロックされないようにする。-wで、このプロセスが終われば一緒に終わる。
     let _ = Command::new("caffeinate")
         .args(["-di", "-w", &std::process::id().to_string()])
@@ -80,14 +103,18 @@ fn start(root: &Path, args: &[String]) -> Result<Arc<Ctx>, String> {
     Ok(ctx)
 }
 
-/// 全体の上限。超えたら、そのときの段を書いて後片付けし、失敗で終わる。
-fn watchdog(ctx: Arc<Ctx>, limit: u64) {
+/// 全体の上限を超えたか、親（Ctrl-Cで終わる側）が消えたら、そのときの段を書いて後片付けし、失敗で終わる。
+fn watchdog(ctx: Arc<Ctx>, limit: u64, parent: u32) {
+    let started = std::time::Instant::now();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(limit));
-        eprintln!(
-            "e2e: 失敗: 上限 {limit} 秒を超えました（段: {}）",
-            ctx.current()
-        );
+        let why = loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let alive = std::os::unix::process::parent_id() == parent;
+            if let Some(why) = judge::stop_reason(started.elapsed(), limit, alive) {
+                break why;
+            }
+        };
+        eprintln!("e2e: 失敗: {why}（段: {}）", ctx.current());
         ctx.restore();
         std::process::exit(1);
     });
@@ -114,7 +141,7 @@ impl Ctx {
             iso_created: AtomicBool::new(false),
             iso_sock: Mutex::new(None),
             stage: Mutex::new("準備".into()),
-            restored: AtomicBool::new(false),
+            restored: Mutex::new(None),
             colima_was_running,
             app,
             exe,

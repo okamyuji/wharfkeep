@@ -2,16 +2,18 @@
 use super::*;
 
 impl Ctx {
-    pub(super) fn preflight(&self) {
-        let locked =
-            judge::screen_locked(&stdout(Command::new("ioreg").args(["-n", "Root", "-d1"])));
-        self.need(!locked, || {
-            "画面がロックされています。ロックを解除してから実行してください".into()
-        });
-        self.need(!port_in_use(WEB_PORT), || {
-            format!("ポート {WEB_PORT} が使用中です。コンテナの実行を確かめるので、使っているものを止めてください")
-        });
-        let _ = fs::create_dir_all(&self.out);
+    /// 何も変える前の確かめ。止まるときは後片付けもしない。
+    pub(super) fn preflight(&self) -> Result<(), String> {
+        let ioreg = stdout(Command::new("ioreg").args(["-n", "Root", "-d1"]));
+        if judge::screen_locked(&ioreg) {
+            return Err("画面がロックされています。ロックを解除してから実行してください".into());
+        }
+        if port_in_use(WEB_PORT) {
+            return Err(format!(
+                "ポート {WEB_PORT} が使用中です。コンテナの実行を確かめるので、使っているものを止めてください"
+            ));
+        }
+        fs::create_dir_all(&self.out).map_err(|e| format!("{}: {e}", self.out.display()))
     }
 
     pub(super) fn start(&self) {

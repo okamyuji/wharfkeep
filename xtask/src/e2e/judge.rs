@@ -1,4 +1,5 @@
 //! e2eの判断。AXやlaunchctlが返した文字列を読み、待ちを打ち切るかを決める。プロセスは起こさない。
+use std::time::Duration;
 
 /// `E2E_LIMIT`（秒）。無ければ1500秒。
 pub fn limit_secs(env: Option<&str>) -> Result<u64, String> {
@@ -146,6 +147,23 @@ pub fn to_value(value: &str) -> String {
         " to \"{}\"",
         value.replace('\\', "\\\\").replace('"', "\\\"")
     )
+}
+
+/// 段を走らせた子プロセスの終了コードから、親の結果を決める。子は失敗の理由を自分で書いている。
+pub fn child_outcome(code: Option<i32>) -> Result<(), String> {
+    match code {
+        Some(0) => Ok(()),
+        Some(n) => Err(format!("e2e が失敗しました（終了コード {n}）")),
+        None => Err("e2e がシグナルで終わりました".into()),
+    }
+}
+
+/// 見張りが止める理由。親が消えた（Ctrl-Cで中断された）か、上限の秒数を超えたか。
+pub fn stop_reason(elapsed: Duration, limit: u64, parent_alive: bool) -> Option<String> {
+    if !parent_alive {
+        return Some("中断されました".into());
+    }
+    (elapsed >= Duration::from_secs(limit)).then(|| format!("上限 {limit} 秒を超えました"))
 }
 
 #[cfg(test)]
@@ -313,5 +331,28 @@ mod tests {
     fn to_value_quotes_for_applescript() {
         assert_eq!(to_value("nginx:alpine"), " to \"nginx:alpine\"");
         assert_eq!(to_value("a\"b\\c"), " to \"a\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn child_outcome_passes_only_a_zero_exit() {
+        assert_eq!(child_outcome(Some(0)), Ok(()));
+        assert!(child_outcome(Some(1)).unwrap_err().contains("終了コード 1"));
+        assert!(child_outcome(None).unwrap_err().contains("シグナル"));
+    }
+
+    #[test]
+    fn stop_reason_stops_on_interrupt_or_the_limit() {
+        let s = Duration::from_secs;
+        assert_eq!(stop_reason(s(5), 10, true), None);
+        assert_eq!(
+            stop_reason(s(10), 10, true),
+            Some("上限 10 秒を超えました".into())
+        );
+        assert_eq!(
+            stop_reason(s(11), 10, true),
+            Some("上限 10 秒を超えました".into())
+        );
+        assert_eq!(stop_reason(s(0), 10, false), Some("中断されました".into()));
+        assert_eq!(stop_reason(s(99), 10, false), Some("中断されました".into()));
     }
 }

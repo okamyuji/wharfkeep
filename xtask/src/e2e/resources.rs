@@ -427,10 +427,11 @@ impl Ctx {
         self.see(
             15,
             gpid,
-            "UI element Run a container",
+            "button Run a container",
             "「Run a container」がありません",
         );
-        self.press(gpid, "UI element", "Run a container");
+        // eguiは見出しをDisclosureTriangleにし、AccessKitはそれをボタンとして出す。
+        self.press(gpid, "button", "Run a container");
         self.see(
             10,
             gpid,
