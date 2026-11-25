@@ -1,5 +1,6 @@
 mod bridge;
 pub mod confirm;
+mod fonts;
 mod log_buffer;
 mod pages;
 mod raise;
@@ -47,12 +48,7 @@ fn spawn_self(arg: &str) -> io::Result<()> {
 
 pub use raise::raise_running;
 
-/// 描けない文字（日本語など）をOSのフォントで補う。言語は`WHARFKEEP_LANG`に従い、OSの言語には従わない。
-pub(crate) fn install_fonts(ctx: &egui::Context, lang: Lang) {
-    let provider =
-        egui_system_font_provider::SystemFontProvider::new().with_locale(Some(lang.tag()));
-    ctx.set_font_providers(vec![std::sync::Arc::new(provider)]);
-}
+pub(crate) use fonts::install_fonts;
 
 /// 初めのウィンドウの大きさ。高さは、内訳が上限の行数になったダッシュボードが収まる値にする。
 /// それより長い一覧は右ペインの中でスクロールする。
