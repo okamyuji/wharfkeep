@@ -127,6 +127,34 @@ mod tests {
     }
 
     #[test]
+    fn v_metrics_of_bytes_that_are_not_a_font_is_none() {
+        assert_eq!(v_metrics(&FontData::from_static(&[0u8; 4])), None);
+    }
+
+    #[test]
+    fn fallback_font_is_named_and_shifted_per_family() {
+        let fonts = AlignedFonts {
+            system: SystemFontProvider::new().with_locale(Some("ja")),
+        };
+        let get = |family: FontFamily| {
+            fonts
+                .font_for(&FallbackRequest {
+                    cluster: "ロ",
+                    family: &family,
+                })
+                .unwrap()
+        };
+        let prop = get(FontFamily::Proportional);
+        let mono = get(FontFamily::Monospace);
+        assert_ne!(prop.name, mono.name);
+        assert!(prop.data.tweak.y_offset_factor > 0.0);
+        assert_ne!(
+            prop.data.tweak.y_offset_factor,
+            mono.data.tweak.y_offset_factor
+        );
+    }
+
+    #[test]
     fn baseline_shift_is_zero_for_the_reference_itself() {
         assert_eq!(baseline_shift(HIRAGINO, HIRAGINO), 0.0);
     }
