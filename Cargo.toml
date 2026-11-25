@@ -15,6 +15,7 @@ publish = false
 bollard = "0.21.1"
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "system_fonts", "wgpu"] }
 egui_system_font_provider = "0.37"
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 futures-util = "0.3.34"
 libc = "0.2"
 serde = { version = "1.0.229", features = ["derive"] }
